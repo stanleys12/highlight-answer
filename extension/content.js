@@ -1,14 +1,15 @@
-// Highlight Answer — highlight text with the mouse; when the mouse is released:
-//   not a question               → nothing happens
+// Highlight Answer — highlight a question, then click the small "Answer" button beside it (or hold Option while
+// highlighting to answer at once; "Automatic" in the options answers every question-looking highlight):
+//   not a question               → no button, nothing happens
 //   question + answer choices    → the right option is clicked
 //   free-response question + box → the answer is typed into the box
 //   question with no box         → the answer is shown, with Copy
 // A small chip near the highlight says what was done and offers Undo (Esc undoes too).
 (() => {
   if (window.__highlightAnswer) return; window.__highlightAnswer = true;
-  const MIN = 4, MAX = 4000, SETTLE = 350, HIDE_MS = 8000;
-  let timer = null, lastKey = '', lastAt = 0, undo = null, gen = 0;
-  let cfg = { enabled: true, model: 'sonnet', aboutMe: '' };
+  const MIN = 4, MAX = 8000, SETTLE = 350, HIDE_MS = 8000;
+  let timer = null, undo = null, gen = 0;
+  let cfg = { enabled: true, mode: 'button', model: 'opus', think: true, aboutMe: '' };
   chrome.storage.sync.get(cfg, (v) => { cfg = { ...cfg, ...v }; });
   chrome.storage.onChanged.addListener((ch) => { for (const k in ch) cfg[k] = ch[k].newValue; });
 
@@ -87,8 +88,8 @@
   const QWORD = /^\s*(please\s+)?(describe|explain|tell (us|me)|list|provide|summari[sz]e|write|give|calculate|compute|solve|find|define|compare|identify|what|why|how|when|where|which|who|whom|whose|do|does|did|is|are|was|were|will|would|can|could|should|has|have)\b/i;
   const looksAsked = (t) => /\?/.test(t) || QWORD.test(t);
   function contextOf(scope) {                          // the text around the highlight, for the model to read the question in
-    let el = scope; while (el.parentElement && el.parentElement !== document.body && txt(el).length < 1200) el = el.parentElement;
-    return txt(el).slice(0, 2500);
+    let el = scope; while (el.parentElement && el.parentElement !== document.body && txt(el).length < 3000) el = el.parentElement;
+    return txt(el).slice(0, 6000);
   }
 
   // ── applying the answer ─────────────────────────────────────────────────────────────────────────
@@ -118,26 +119,39 @@
   }
   function doUndo() { if (!undo) return; try { undo(); } catch {} undo = null; show('Undone.', [], parseFloat(chip.style.left), parseFloat(chip.style.top)); }
 
-  // ── mouse released on a highlight → ask → act ───────────────────────────────────────────────────
-  async function run() {
-    if (!cfg.enabled) return;
-    const s = getSelection(); if (!s || s.isCollapsed || !s.rangeCount) return;
+  // ── highlight → (Answer button | Option-held / automatic) → ask → act ─────────────────────────
+  // A plain highlight never changes the page and sends nothing: at most a small "Answer" button appears beside it,
+  // and it goes away on the next click, key (⌘C included), scroll, or window switch. Copying is untouched.
+  function prepare() {
+    const s = getSelection(); if (!s || s.isCollapsed || !s.rangeCount) return null;
     const range = s.getRangeAt(0), text = range.toString().replace(/\s+/g, ' ').trim();
-    if (text.length < MIN || text.length > MAX) return;
-    const a = elOf(range.commonAncestorContainer); if (!a || a.closest('input,textarea,[contenteditable=""],[contenteditable=true]')) return;   // selecting inside a box you are typing in
-    const key = location.href + '|' + text; if (key === lastKey && Date.now() - lastAt < 15000) return; lastKey = key; lastAt = Date.now();
+    if (text.length < MIN || text.length > MAX) return null;
+    const a = elOf(range.commonAncestorContainer); if (!a || a.closest('input,textarea,[contenteditable=""],[contenteditable=true]')) return null;   // selecting inside a box you are typing in
     const { choices, target, scope } = collect(range);
-    if (!choices.length && !target && !looksAsked(text)) return;        // plain prose: nothing happens, nothing is sent
-    const my = ++gen;                                                    // a newer highlight supersedes this one
-    const rb = range.getBoundingClientRect(), x = rb.right + 8, y = rb.bottom + 6;
-    show('<span class="dot"></span>Reading…', [], x, y, true);
-    const data = { selection: text, choices: choices.map((c) => c.label),
-                   target: target ? { kind: kindOf(target), label: labelOf(target), maxlength: target.maxLength > 0 ? target.maxLength : 0 } : null,
-                   url: location.href, title: document.title, context: contextOf(scope), model: cfg.model, aboutMe: cfg.aboutMe };
-    let r; try { r = await chrome.runtime.sendMessage({ type: 'answer', data }); } catch (e) { r = { ok: false, error: String(e.message || e) }; }
+    if (!choices.length && !target && !looksAsked(text)) return null;   // plain prose: no button, nothing sent
+    const rb = range.getBoundingClientRect();
+    return { choices, target, x: rb.right + 8, y: rb.bottom + 6,
+      data: { selection: text, choices: choices.map((c) => c.label),
+              target: target ? { kind: kindOf(target), label: labelOf(target), maxlength: target.maxLength > 0 ? target.maxLength : 0 } : null,
+              url: location.href, title: document.title, context: contextOf(scope), model: cfg.model, think: cfg.think, aboutMe: cfg.aboutMe } };
+  }
+  let offered = false;
+  function offer(prep) {
+    offered = true;
+    show('', [['Answer', () => { offered = false; answer(prep); }]], prep.x, prep.y, false);
+    clearTimeout(hideT); hideT = setTimeout(() => { if (offered) { offered = false; hide(); } }, 6000);
+  }
+  function withdraw() { if (offered) { offered = false; hide(); } }
+  async function answer({ choices, target, x, y, data }) {
+    const my = ++gen;                                                    // a newer request supersedes this one
+    const t0 = Date.now();
+    const tick = setInterval(() => { if (my === gen) show('<span class="dot"></span>Thinking… ' + Math.round((Date.now() - t0) / 1000) + 's', [], x, y, true); }, 1000);
+    show('<span class="dot"></span>Thinking…', [], x, y, true);
+    let r; try { r = await chrome.runtime.sendMessage({ type: 'answer', data: { ...data, model: cfg.model, think: cfg.think } }); } catch (e) { r = { ok: false, error: String(e.message || e) }; }
+    clearInterval(tick);
     if (my !== gen) return;
     if (!r || !r.ok) return show('<b>Highlight Answer</b> ' + esc((r && r.error) || 'no answer'), [], x, y);
-    if (r.kind === 'none') return hide();
+    if (r.kind === 'none') return show('Not a question — nothing to do.', [], x, y);
     if (r.kind === 'needs_info') return show('<b>Needs info about you</b><br>' + esc(r.missing || '') + '<br><small>Add it under “About me” in the extension options.</small>', [], x, y);
     if (r.kind === 'choice') {
       undo = choose(choices, r.picks);
@@ -150,7 +164,19 @@
     if (r.kind === 'free') return show('<b>Answer</b><br>' + esc(r.answer), [['Copy', () => navigator.clipboard.writeText(r.answer)], ['×', hide]], x, y, true);
     hide();
   }
-  document.addEventListener('mouseup', (e) => { if (e.composedPath().includes(host)) return; clearTimeout(timer); timer = setTimeout(run, SETTLE); }, true);
-  document.addEventListener('mousedown', (e) => { if (!e.composedPath().includes(host)) hide(); }, true);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (undo) doUndo(); else hide(); } }, true);
+  document.addEventListener('mouseup', (e) => {
+    if (e.composedPath().includes(host) || !cfg.enabled) return;
+    const alt = e.altKey; clearTimeout(timer);
+    timer = setTimeout(() => {
+      const prep = prepare(); if (!prep) return;
+      if (alt || cfg.mode === 'auto') answer(prep); else offer(prep);
+    }, SETTLE);
+  }, true);
+  document.addEventListener('mousedown', (e) => { if (!e.composedPath().includes(host)) { clearTimeout(timer); withdraw(); if (!undo) hide(); } }, true);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { if (undo) doUndo(); else { offered = false; hide(); } return; }
+    withdraw();                                                          // ⌘C or any typing: the button gets out of the way
+  }, true);
+  addEventListener('scroll', withdraw, true);
+  addEventListener('blur', withdraw);
 })();

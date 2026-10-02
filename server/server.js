@@ -24,14 +24,22 @@ function claudeBin() {
   return path.join(ext, dirs[dirs.length - 1], 'resources/native-binary/claude');
 }
 
-function ask(prompt, model) {
+// Claude Code's own system prompt tells the model it is a coding agent with tools — with the tools removed, Opus
+// still "ran Python" for an arithmetic question (as plain text) instead of answering. Replace it outright.
+const SYSTEM = 'You answer questions that a person highlighted on a web page. You have no tools: do every calculation, '
+  + 'code trace and logical step yourself, in your head, carefully, and double-check it before you commit. '
+  + 'Your entire reply is one JSON object in the format the user message specifies — no prose, no markdown.';
+// Thinking: effort "high" lets the model reason as long as a hard question needs (an easy one still answers in a
+// few seconds); "low" with no thinking budget is the fast path.
+function ask(prompt, model, think) {
   return new Promise((resolve, reject) => {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hla-'));
     const p = spawn(claudeBin(), ['-p', '--model', model, '--max-turns', '3', '--output-format', 'json',
+      '--system-prompt', SYSTEM, '--effort', think ? 'high' : 'low',
       '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--tools', '', '--dangerously-skip-permissions'],
-      { cwd, env: { ...process.env, MAX_THINKING_TOKENS: '0' } });
+      { cwd, env: think ? process.env : { ...process.env, MAX_THINKING_TOKENS: '0' } });
     let out = '', err = '';
-    const kill = setTimeout(() => p.kill('SIGKILL'), 90000);
+    const kill = setTimeout(() => p.kill('SIGKILL'), 240000);
     p.stdout.on('data', (d) => { out += d; });
     p.stderr.on('data', (d) => { err += d; });
     p.on('close', () => {
@@ -54,17 +62,17 @@ Reply with ONLY one JSON object, no other text:
 - {"kind":"free","answer":"<text>"} — any other question. The answer is exactly what should go in the box: no preamble, no quotes, no "Answer:". Size it to the box: a single-line input gets a word, number, or one sentence; a multi-line box gets a complete answer (usually one short paragraph, longer only if the question clearly wants it); respect a character limit.
 - {"kind":"needs_info","missing":"<what you would need>"} — the question is about the person filling the page (their name, history, opinions, experiences) and ABOUT THE PERSON below does not tell you. Never invent personal facts.
 
-Answer correctly and directly. Use the page context only to understand the question.
+Getting it RIGHT matters more than speed. Before answering, work the problem out fully: for math, compute it step by step and check the result; for code, trace it line by line; for a multiple-choice question, test EVERY option against the question (watch for "NOT", "EXCEPT", "always", "best", "most likely" and other qualifiers) and pick the one that is actually correct, not the one that merely sounds familiar. If the question depends on information in the page context (a passage, a table, a code block), use it. For a free response, answer what was actually asked, fully, at the level of a strong expert. Keep all of that reasoning to yourself — the JSON is the only output.
 
 HIGHLIGHTED TEXT:
-${String(q.selection || '').slice(0, 3000)}
+${String(q.selection || '').slice(0, 8000)}
 
 CHOICES: ${choices.length ? JSON.stringify(choices) : 'none'}
 ANSWER BOX: ${box}
 
 PAGE: ${String(q.title || '').slice(0, 150)} — ${String(q.url || '').slice(0, 200)}
 PAGE CONTEXT (text around the highlight):
-${String(q.context || '').slice(0, 2500)}
+${String(q.context || '').slice(0, 6000)}
 
 ABOUT THE PERSON (written by them; may be empty):
 ${String(q.aboutMe || '').slice(0, 3000) || '(nothing)'}`;
@@ -77,10 +85,16 @@ function parse(text) {
 }
 
 async function answer(q) {
-  const model = MODELS.has(q.model) ? q.model : 'sonnet';
+  const model = MODELS.has(q.model) ? q.model : 'opus';
   const t0 = Date.now();
-  const r = await ask(prompt(q), model);
-  let j; try { j = parse(r.text); } catch { return { ok: false, error: 'unreadable answer', raw: r.text.slice(0, 200), cost: r.cost }; }
+  const think = q.think !== false;
+  // one retry: a CLI that died (several calls at once) or a reply that was not JSON
+  let r, j, spent = 0;
+  for (let i = 0; i < 2; i++) {
+    try { r = await ask(prompt(q), model, think); spent += r.cost; j = parse(r.text); break; }
+    catch (e) { if (i === 1) return { ok: false, error: r && !j ? 'unreadable answer: ' + String(r.text).slice(0, 120) : String(e.message || e).slice(0, 200), cost: spent }; r = null; }
+  }
+  r.cost = spent;
   const choices = q.choices || [];
   if (j.kind === 'choice') {
     // keep only picks that really are options on the page
