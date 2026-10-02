@@ -7,9 +7,9 @@
 // A small chip near the highlight says what was done and offers Undo (Esc undoes too).
 (() => {
   if (window.__highlightAnswer) return; window.__highlightAnswer = true;
-  const MIN = 4, MAX = 8000, SETTLE = 350, HIDE_MS = 8000;
+  const MIN = 4, MAX = 8000, SETTLE = 150, HIDE_MS = 8000;
   let timer = null, undo = null, gen = 0, lastMouseUp = 0;
-  let cfg = { enabled: true, mode: 'button', model: 'opus', think: true, aboutMe: '' };
+  let cfg = { enabled: true, mode: 'button', model: 'opus', think: true, speculate: true, aboutMe: '' };
   chrome.storage.sync.get(cfg, (v) => { cfg = { ...cfg, ...v }; });
   chrome.storage.onChanged.addListener((ch) => { for (const k in ch) cfg[k] = ch[k].newValue; });
 
@@ -174,37 +174,68 @@
               target: target ? { kind: kindOf(target), label: labelOf(target), maxlength: target.maxLength > 0 ? target.maxLength : 0 } : null,
               url: location.href, title: document.title, context: contextOf(scope), model: cfg.model, think: cfg.think, aboutMe: cfg.aboutMe } };
   }
+  // ── a request: streamed through a port; can start before the click (speculation) and be picked up by it ──
+  function startJob(prep, spec) {
+    const job = { id: Math.random().toString(36).slice(2), spec, text: '', final: null, firstAt: 0, doneAt: 0, onUpdate: null };
+    const port = chrome.runtime.connect({ name: 'answer' });
+    port.onMessage.addListener((m) => {
+      if (m.type === 'delta') { job.text += m.text; if (!job.firstAt) job.firstAt = Date.now(); }
+      else if (m.type === 'final') { job.final = m; job.doneAt = Date.now(); if (!job.firstAt) job.firstAt = job.doneAt; try { port.disconnect(); } catch {} }
+      if (job.onUpdate) job.onUpdate();
+    });
+    port.onDisconnect.addListener(() => { if (!job.final) { job.final = { ok: false, error: 'connection to the extension was lost' }; job.doneAt = Date.now(); if (job.onUpdate) job.onUpdate(); } });
+    port.postMessage({ ...prep.data, id: job.id, spec, model: cfg.model, think: cfg.think });
+    return job;
+  }
   let offered = false;
   function offer(prep) {
     offered = true;
+    // start answering now: by the time the Answer button is clicked the answer is often already there. Only
+    // question-shaped highlights get here; the speculative answer is cached, so nothing is ever asked twice.
+    if (cfg.speculate !== false && !prep.job) prep.job = startJob(prep, true);
     show('', [['Answer', () => { offered = false; answer(prep); }]], prep.x, prep.y, false);
     clearTimeout(hideT); hideT = setTimeout(() => { if (offered) { offered = false; hide(); } }, 6000);
   }
   function withdraw() { if (offered) { offered = false; hide(); } }
-  async function answer({ choices, target, typed, x, y, data }) {
+  function answer(prep) {
+    const { choices, target, typed, x, y } = prep;
     const my = ++gen;                                                    // a newer request supersedes this one
-    const t0 = Date.now();
-    const tick = setInterval(() => { if (my === gen) show('<span class="dot"></span>Thinking… ' + Math.round((Date.now() - t0) / 1000) + 's', [], x, y, true); }, 1000);
-    show('<span class="dot"></span>Thinking…', [], x, y, true);
-    let r; try { r = await chrome.runtime.sendMessage({ type: 'answer', data: { ...data, model: cfg.model, think: cfg.think } }); } catch (e) { r = { ok: false, error: String(e.message || e) }; }
-    clearInterval(tick);
-    if (my !== gen) return;
-    if (!r || !r.ok) return show('<b>Highlight Answer</b> ' + esc((r && r.error) || 'no answer'), [], x, y);
-    if (r.kind === 'none') return show('Not a question — nothing to do.', [], x, y);
-    if (r.kind === 'needs_info') return show('<b>Needs info about you</b><br>' + esc(r.missing || '') + '<br><small>Add it under “About me” in the extension options.</small>', [], x, y);
-    if (r.kind === 'choice') {
-      undo = choose(choices, r.picks);
-      return show('<b>Chose</b> ' + esc(r.picks.join('; ')) + (r.why ? '<br><small>' + esc(r.why) + '</small>' : ''), undo ? [['Undo', doUndo]] : [], x, y);
+    const clickAt = Date.now();
+    const job = prep.job || startJob(prep, false);
+    const readyBeforeClick = !!job.final;
+    let finished = false;
+    const render = () => {
+      if (my !== gen || finished) return;
+      if (!job.final) {
+        if (job.text) show('<b>Answer</b><br>' + esc(job.text) + '<span class="dot"></span>', [], x, y, true);
+        else show('<span class="dot"></span>Thinking… ' + Math.round((Date.now() - clickAt) / 1000) + 's', [], x, y, true);
+        return;
+      }
+      finished = true; clearInterval(tick); job.onUpdate = null;
+      chrome.runtime.sendMessage({ type: 'metric', data: { id: job.id, spec: !!prep.job, readyBeforeClick, model: cfg.model,
+        clickToFirstMs: readyBeforeClick ? 0 : Math.max(0, job.firstAt - clickAt), clickToDoneMs: readyBeforeClick ? 0 : job.doneAt - clickAt, kind: job.final.kind || null, ok: !!job.final.ok } });
+      done(job.final);
+    };
+    const tick = setInterval(render, 1000);
+    job.onUpdate = render; render();
+    function done(r) {
+      if (!r || !r.ok) return show('<b>Highlight Answer</b> ' + esc((r && r.error) || 'no answer'), [], x, y);
+      if (r.kind === 'none') return show('Not a question — nothing to do.', [], x, y);
+      if (r.kind === 'needs_info') return show('<b>Needs info about you</b><br>' + esc(r.missing || '') + '<br><small>Add it under “About me” in the extension options.</small>', [], x, y);
+      if (r.kind === 'choice') {
+        undo = choose(choices, r.picks);
+        return show('<b>Chose</b> ' + esc(r.picks.join('; ')) + (r.why ? '<br><small>' + esc(r.why) + '</small>' : ''), undo ? [['Undo', doUndo]] : [], x, y);
+      }
+      if (r.kind === 'free' && target) {
+        undo = setValue(target, r.answer);
+        return show('<b>Filled</b><br>' + esc(r.answer).slice(0, 700), [['Undo', doUndo]], x, y);
+      }
+      // a question he typed into a box: the answer is shown, never typed over his text unless he asks (Replace)
+      const acts = [['Copy', () => navigator.clipboard.writeText(r.answer)]];
+      if (r.kind === 'free' && typed && typed.field) acts.push(['Replace', () => { undo = replaceTyped(typed, r.answer); show('<b>Replaced</b><br>' + esc(r.answer).slice(0, 700), [['Undo', doUndo]], x, y); }]);
+      if (r.kind === 'free') return show('<b>Answer</b><br>' + esc(r.answer), [...acts, ['×', hide]], x, y, true);
+      hide();
     }
-    if (r.kind === 'free' && target) {
-      undo = setValue(target, r.answer);
-      return show('<b>Filled</b><br>' + esc(r.answer).slice(0, 700), [['Undo', doUndo]], x, y);
-    }
-    // a question he typed into a box: the answer is shown, never typed over his text unless he asks (Replace)
-    const acts = [['Copy', () => navigator.clipboard.writeText(r.answer)]];
-    if (r.kind === 'free' && typed && typed.field) acts.push(['Replace', () => { undo = replaceTyped(typed, r.answer); show('<b>Replaced</b><br>' + esc(r.answer).slice(0, 700), [['Undo', doUndo]], x, y); }]);
-    if (r.kind === 'free') return show('<b>Answer</b><br>' + esc(r.answer), [...acts, ['×', hide]], x, y, true);
-    hide();
   }
   document.addEventListener('mouseup', (e) => {
     if (e.composedPath().includes(host) || !cfg.enabled) return;

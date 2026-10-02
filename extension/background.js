@@ -2,12 +2,35 @@
 // policy governs their requests), so the request goes through here. It only ever talks to 127.0.0.1:8799.
 const HELPER = 'http://127.0.0.1:8799';
 
+const H = { 'Content-Type': 'application/json', 'X-Highlight-Answer': '1' };
+const down = (e) => 'helper not running on 127.0.0.1:8799 (' + String(e.message || e).slice(0, 60) + ')';
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg.type !== 'answer') return false;
-  fetch(HELPER + '/answer', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Highlight-Answer': '1' }, body: JSON.stringify(msg.data) })
-    .then((r) => r.json()).then(sendResponse)
-    .catch((e) => sendResponse({ ok: false, error: 'helper not running on 127.0.0.1:8799 (' + String(e.message || e).slice(0, 60) + ')' }));
-  return true;
+  if (msg.type === 'answer') {
+    fetch(HELPER + '/answer', { method: 'POST', headers: H, body: JSON.stringify(msg.data) })
+      .then((r) => r.json()).then(sendResponse).catch((e) => sendResponse({ ok: false, error: down(e) }));
+    return true;
+  }
+  if (msg.type === 'metric') { fetch(HELPER + '/metric', { method: 'POST', headers: H, body: JSON.stringify(msg.data) }).catch(() => {}); return false; }
+  if (msg.type === 'stats') { fetch(HELPER + '/stats?days=' + (msg.days || 7), { headers: H }).then((r) => r.json()).then(sendResponse).catch((e) => sendResponse({ ok: false, error: down(e) })); return true; }
+  return false;
+});
+
+// Streaming answers: the page opens a port, gets {type:'delta',text} as the answer is written, then {type:'final',…}.
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'answer') return;
+  let alive = true; port.onDisconnect.addListener(() => { alive = false; });
+  port.onMessage.addListener(async (data) => {
+    const post = (m) => { if (alive) try { port.postMessage(m); } catch {} };
+    try {
+      const res = await fetch(HELPER + '/answer', { method: 'POST', headers: H, body: JSON.stringify({ ...data, stream: true }) });
+      const rd = res.body.getReader(), dec = new TextDecoder(); let buf = '';
+      for (;;) {
+        const { done, value } = await rd.read(); if (done) break;
+        buf += dec.decode(value, { stream: true }); let i;
+        while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l) try { post(JSON.parse(l)); } catch {} }
+      }
+    } catch (e) { post({ type: 'final', ok: false, error: down(e) }); }
+  });
 });
 
 // the toolbar button turns it on and off

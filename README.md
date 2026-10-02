@@ -24,3 +24,16 @@ Default Opus + thinking: 10/10 on a hard benchmark (Bertrand-style probability, 
 2. chrome://extensions → Developer mode → Load unpacked → `extension/`.
 
 Log: `/tmp/highlight_answer.log`. Independent of Relay — no shared code, profile, or prompts.
+
+## Speed & metrics
+Measured on easy questions, from clicking Answer (≈0.8 s after the highlight):
+
+| | first words | finished |
+|---|---|---|
+| v0.4 (no streaming, CLI side-traffic on) | ~2.9 s | ~2.9 s |
+| v0.5, answer-early off | 1.1 s | 2.0 s |
+| v0.5, answer-early on (default) | **0.5 s** | **1.2 s** |
+
+What does it: CLI non-essential traffic off (−1 s: it made a hidden Haiku call every run), a pre-started spare CLI in stream-json input mode (−0.18 s; a plain `-p` process can't wait — it drops stdin after ~3 s), streamed answers, the request starting when the Answer button appears, identical in-flight requests sharing one call, and a cache (repeats ≈ 2 ms).
+
+Every request is logged to `metrics.jsonl` (server timings, tokens, cost, warm/cold CLI, plus what you waited from click to first words / done). Summary: extension options → Performance, or `curl -H 'X-Highlight-Answer: 1' 127.0.0.1:8799/stats?days=7`.
