@@ -20,5 +20,25 @@ chrome.action.onClicked.addListener(async () => {
   const { enabled = true } = await chrome.storage.sync.get('enabled');
   await chrome.storage.sync.set({ enabled: !enabled }); badge();
 });
+// ── right-click backup: "Answer with Highlight Answer" on any selection ─────────────────────────────────
+// 1) the page's own script answers it (and can still click the option / fill the box);
+// 2) the page has no script yet (a tab opened before the extension was installed / reloaded): put it there, retry;
+// 3) Chrome does not let extensions into the page (PDF viewer, chrome:// pages, the Web Store): a small window answers.
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.removeAll(() => chrome.contextMenus.create({ id: 'answer', title: 'Answer with Highlight Answer', contexts: ['selection'] }));
+});
+async function force(tab, info) {
+  const to = { frameId: info.frameId || 0 };
+  const send = () => chrome.tabs.sendMessage(tab.id, { type: 'force', text: info.selectionText }, to);
+  try { const r = await send(); if (r && r.ok) return; } catch {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id, frameIds: [to.frameId] }, files: ['content.js'] });
+      const r = await send(); if (r && r.ok) return;
+    } catch {}
+  }
+  const u = chrome.runtime.getURL('answer.html') + '?' + new URLSearchParams({ text: info.selectionText || '', url: tab.url || info.pageUrl || '', title: tab.title || '' });
+  chrome.windows.create({ url: u, type: 'popup', width: 460, height: 360, focused: true });
+}
+chrome.contextMenus.onClicked.addListener((info, tab) => { if (info.menuItemId === 'answer' && tab) force(tab, info); });
 chrome.runtime.onInstalled.addListener(badge);
 chrome.runtime.onStartup.addListener(badge);

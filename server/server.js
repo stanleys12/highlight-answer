@@ -64,7 +64,7 @@ Reply with ONLY one JSON object, no other text:
 
 Getting it RIGHT matters more than speed. Before answering, work the problem out fully: for math, compute it step by step and check the result; for code, trace it line by line; for a multiple-choice question, test EVERY option against the question (watch for "NOT", "EXCEPT", "always", "best", "most likely" and other qualifiers) and pick the one that is actually correct, not the one that merely sounds familiar. If the question depends on information in the page context (a passage, a table, a code block), use it. For a free response, answer what was actually asked, fully, at the level of a strong expert. Keep all of that reasoning to yourself — the JSON is the only output.
 
-HIGHLIGHTED TEXT:
+${q.force ? 'The person right-clicked this highlight and explicitly asked for an answer: treat it as a question or prompt (a bare term or statement means "explain this" / "is this true?") unless it plainly cannot be one.\n\n' : ''}HIGHLIGHTED TEXT:
 ${String(q.selection || '').slice(0, 8000)}
 
 CHOICES: ${choices.length ? JSON.stringify(choices) : 'none'}

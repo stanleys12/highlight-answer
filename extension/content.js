@@ -122,13 +122,19 @@
   // ── highlight → (Answer button | Option-held / automatic) → ask → act ─────────────────────────
   // A plain highlight never changes the page and sends nothing: at most a small "Answer" button appears beside it,
   // and it goes away on the next click, key (⌘C included), scroll, or window switch. Copying is untouched.
-  function prepare() {
-    const s = getSelection(); if (!s || s.isCollapsed || !s.rangeCount) return null;
-    const range = s.getRangeAt(0), text = range.toString().replace(/\s+/g, ' ').trim();
-    if (text.length < MIN || text.length > MAX) return null;
-    const a = elOf(range.commonAncestorContainer); if (!a || a.closest('input,textarea,[contenteditable=""],[contenteditable=true]')) return null;   // selecting inside a box you are typing in
+  // force (the right-click menu): no "does it look like a question" filter — he asked for it explicitly. When the
+  // page selection cannot be read (text inside a box, a canvas-drawn page), Chrome's own copy of it is used alone.
+  function prepare(force, fallback) {
+    const s = getSelection();
+    const live = s && !s.isCollapsed && s.rangeCount ? s.getRangeAt(0) : null;
+    const liveText = live ? live.toString().replace(/\s+/g, ' ').trim() : '';
+    if (!live || !liveText) return force && fallback ? bare(fallback) : null;
+    const range = live, text = liveText;
+    if (text.length < (force ? 1 : MIN) || text.length > MAX) return null;
+    const a = elOf(range.commonAncestorContainer);
+    if (!a || a.closest('input,textarea,[contenteditable=""],[contenteditable=true]')) return force ? bare(text) : null;   // selecting inside a box you are typing in
     const { choices, target, scope } = collect(range);
-    if (!choices.length && !target && !looksAsked(text)) return null;   // plain prose: no button, nothing sent
+    if (!force && !choices.length && !target && !looksAsked(text)) return null;   // plain prose: no button, nothing sent
     const rb = range.getBoundingClientRect();
     return { choices, target, x: rb.right + 8, y: rb.bottom + 6,
       data: { selection: text, choices: choices.map((c) => c.label),
@@ -179,4 +185,16 @@
   }, true);
   addEventListener('scroll', withdraw, true);
   addEventListener('blur', withdraw);
+  function bare(text) {                                // just the text: no controls to act on, the answer is shown
+    return { choices: [], target: null, x: innerWidth / 2 - 190, y: 24,
+      data: { selection: String(text).slice(0, MAX), choices: [], target: null, url: location.href, title: document.title,
+              context: txt(document.body).slice(0, 6000), model: cfg.model, think: cfg.think, aboutMe: cfg.aboutMe } };
+  }
+  // right-click → "Answer with Highlight Answer"
+  chrome.runtime.onMessage.addListener((msg, _s, reply) => {
+    if (msg.type !== 'force') return false;
+    const prep = prepare(true, msg.text);
+    if (!prep) { reply({ ok: false }); return false; }
+    prep.data.force = true; withdraw(); answer(prep); reply({ ok: true }); return false;
+  });
 })();
