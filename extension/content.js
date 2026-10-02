@@ -8,7 +8,7 @@
 (() => {
   if (window.__highlightAnswer) return; window.__highlightAnswer = true;
   const MIN = 4, MAX = 8000, SETTLE = 350, HIDE_MS = 8000;
-  let timer = null, undo = null, gen = 0;
+  let timer = null, undo = null, gen = 0, lastMouseUp = 0;
   let cfg = { enabled: true, mode: 'button', model: 'opus', think: true, aboutMe: '' };
   chrome.storage.sync.get(cfg, (v) => { cfg = { ...cfg, ...v }; });
   chrome.storage.onChanged.addListener((ch) => { for (const k in ch) cfg[k] = ch[k].newValue; });
@@ -124,7 +124,40 @@
   // and it goes away on the next click, key (⌘C included), scroll, or window switch. Copying is untouched.
   // force (the right-click menu): no "does it look like a question" filter — he asked for it explicitly. When the
   // page selection cannot be read (text inside a box, a canvas-drawn page), Chrome's own copy of it is used alone.
+  // Text he TYPED and then highlighted inside a search bar / text field / editor. The page selection never shows text
+  // inside a box, so it is read from the box itself. Typed-and-highlighted is deliberate, so any such text gets the
+  // Answer button (automatic mode still wants it to look like a question).
+  function deepActive() { let el = document.activeElement; while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement; return el; }
+  const TEXTISH = /^(text|search|url|email|tel|)$/i;
+  function typedSelection() {
+    const el = deepActive(); if (!el || host.contains(el)) return null;
+    if (el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && TEXTISH.test(el.getAttribute('type') || ''))) {
+      let s, e; try { s = el.selectionStart; e = el.selectionEnd; } catch { return null; }
+      if (s == null || e <= s) return null;
+      return { el, text: el.value.slice(s, e), start: s, end: e, field: true };
+    }
+    const sel = getSelection();
+    if (el.isContentEditable && sel && !sel.isCollapsed && sel.rangeCount && el.contains(sel.anchorNode)) return { el, text: sel.toString(), range: sel.getRangeAt(0) };
+    return null;
+  }
+  function typedPrep(ty, force) {
+    const text = ty.text.replace(/\s+/g, ' ').trim();
+    if (text.length < (force ? 1 : MIN) || text.length > MAX) return null;
+    if (!force && cfg.mode === 'auto' && !looksAsked(text)) return null;
+    const rb = (ty.range || ty.el).getBoundingClientRect();
+    const where = [ty.el.getAttribute('aria-label'), ty.el.getAttribute('placeholder'), ty.el.getAttribute('name'), ty.el.getAttribute('role')].filter(Boolean).join(' / ');
+    return { typed: ty, choices: [], target: null, x: rb.left, y: rb.bottom + 6,
+      data: { selection: text, typed: true, choices: [], target: null, url: location.href, title: document.title,
+              context: 'Typed into a text field' + (where ? ' (' + where + ')' : '') + ' on this page.', model: cfg.model, think: cfg.think, aboutMe: cfg.aboutMe } };
+  }
+  function replaceTyped(ty, v) {                       // put the answer in place of the highlighted text; Undo restores it
+    const el = ty.el, before = el.value;
+    el.focus(); el.setSelectionRange(ty.start, ty.end);
+    if (!document.execCommand('insertText', false, v)) { el.setRangeText(v, ty.start, ty.end, 'end'); el.dispatchEvent(new Event('input', { bubbles: true })); }
+    return () => { const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, before); el.dispatchEvent(new Event('input', { bubbles: true })); };
+  }
   function prepare(force, fallback) {
+    const ty = typedSelection(); if (ty) return typedPrep(ty, force);
     const s = getSelection();
     const live = s && !s.isCollapsed && s.rangeCount ? s.getRangeAt(0) : null;
     const liveText = live ? live.toString().replace(/\s+/g, ' ').trim() : '';
@@ -148,7 +181,7 @@
     clearTimeout(hideT); hideT = setTimeout(() => { if (offered) { offered = false; hide(); } }, 6000);
   }
   function withdraw() { if (offered) { offered = false; hide(); } }
-  async function answer({ choices, target, x, y, data }) {
+  async function answer({ choices, target, typed, x, y, data }) {
     const my = ++gen;                                                    // a newer request supersedes this one
     const t0 = Date.now();
     const tick = setInterval(() => { if (my === gen) show('<span class="dot"></span>Thinking… ' + Math.round((Date.now() - t0) / 1000) + 's', [], x, y, true); }, 1000);
@@ -167,12 +200,15 @@
       undo = setValue(target, r.answer);
       return show('<b>Filled</b><br>' + esc(r.answer).slice(0, 700), [['Undo', doUndo]], x, y);
     }
-    if (r.kind === 'free') return show('<b>Answer</b><br>' + esc(r.answer), [['Copy', () => navigator.clipboard.writeText(r.answer)], ['×', hide]], x, y, true);
+    // a question he typed into a box: the answer is shown, never typed over his text unless he asks (Replace)
+    const acts = [['Copy', () => navigator.clipboard.writeText(r.answer)]];
+    if (r.kind === 'free' && typed && typed.field) acts.push(['Replace', () => { undo = replaceTyped(typed, r.answer); show('<b>Replaced</b><br>' + esc(r.answer).slice(0, 700), [['Undo', doUndo]], x, y); }]);
+    if (r.kind === 'free') return show('<b>Answer</b><br>' + esc(r.answer), [...acts, ['×', hide]], x, y, true);
     hide();
   }
   document.addEventListener('mouseup', (e) => {
     if (e.composedPath().includes(host) || !cfg.enabled) return;
-    const alt = e.altKey; clearTimeout(timer);
+    const alt = e.altKey; clearTimeout(timer); lastMouseUp = Date.now();
     timer = setTimeout(() => {
       const prep = prepare(); if (!prep) return;
       if (alt || cfg.mode === 'auto') answer(prep); else offer(prep);
@@ -182,6 +218,12 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { if (undo) doUndo(); else { offered = false; hide(); } return; }
     withdraw();                                                          // ⌘C or any typing: the button gets out of the way
+  }, true);
+  // keyboard selection inside a box (⌘A, ⇧+arrows): the box fires "select"
+  document.addEventListener('select', (e) => {
+    if (!cfg.enabled || e.composedPath().includes(host) || Date.now() - lastMouseUp < 1000) return;   // a mouse selection: the mouseup handler has it (with Option)
+    clearTimeout(timer);
+    timer = setTimeout(() => { const ty = typedSelection(); const prep = ty && typedPrep(ty, false); if (!prep) return; if (cfg.mode === 'auto') answer(prep); else offer(prep); }, SETTLE);
   }, true);
   addEventListener('scroll', withdraw, true);
   addEventListener('blur', withdraw);

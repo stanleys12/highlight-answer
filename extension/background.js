@@ -39,6 +39,13 @@ async function force(tab, info) {
   const u = chrome.runtime.getURL('answer.html') + '?' + new URLSearchParams({ text: info.selectionText || '', url: tab.url || info.pageUrl || '', title: tab.title || '' });
   chrome.windows.create({ url: u, type: 'popup', width: 460, height: 360, focused: true });
 }
+// The address bar is Chrome's own — no page script can see a highlight there. Instead: type "ask", space, question, ⏎.
+function answerWindow(text, url, title) {
+  const u = chrome.runtime.getURL('answer.html') + '?' + new URLSearchParams({ text: text || '', url: url || '', title: title || '', typed: '1' });
+  chrome.windows.create({ url: u, type: 'popup', width: 460, height: 360, focused: true });
+}
+chrome.omnibox.setDefaultSuggestion({ description: 'Answer with Highlight Answer: %s' });
+chrome.omnibox.onInputEntered.addListener((text) => { if (text.trim()) answerWindow(text.trim(), '', 'Chrome address bar'); });
 chrome.contextMenus.onClicked.addListener((info, tab) => { if (info.menuItemId === 'answer' && tab) force(tab, info); });
 chrome.runtime.onInstalled.addListener(badge);
 chrome.runtime.onStartup.addListener(badge);

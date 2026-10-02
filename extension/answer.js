@@ -6,7 +6,7 @@ $('q').textContent = P.get('text') || '';
 const t0 = Date.now();
 const tick = setInterval(() => { $('a').textContent = 'Thinking… ' + Math.round((Date.now() - t0) / 1000) + 's'; }, 1000);
 chrome.storage.sync.get({ model: 'opus', think: true, aboutMe: '' }, (cfg) => {
-  const data = { selection: P.get('text') || '', choices: [], target: null, url: P.get('url') || '', title: P.get('title') || '', context: '', ...cfg, force: true };
+  const data = { selection: P.get('text') || '', choices: [], target: null, url: P.get('url') || '', title: P.get('title') || '', context: '', ...cfg, force: true, typed: P.get('typed') === '1' };
   chrome.runtime.sendMessage({ type: 'answer', data }, (r) => {
     clearInterval(tick);
     let out;

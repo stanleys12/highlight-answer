@@ -9,6 +9,10 @@ Chrome extension: highlight a question with the mouse →
 
 A plain highlight never changes the page or sends anything; the button disappears on any click, key (⌘C included), scroll or window switch, so copy-paste is untouched.
 
+**Typed questions:** type a question into any search bar / text field / editor and highlight it → Answer button → the answer is shown (Copy, or Replace to put it in place of your text, with Undo). Your typed text is never overwritten unless you press Replace.
+
+**Chrome's address bar:** pages can't see it, so type `ask`, space, your question, ⏎ → answer window.
+
 **Backup: right-click a selection → "Answer with Highlight Answer".** Always runs (no question filter); on a page whose script isn't there yet it injects it; on pages Chrome keeps extensions out of (PDF viewer, chrome:// pages) a small window shows the answer with Copy.
 
 Undo button on the chip, or Esc. Toolbar button toggles on/off. Options: button vs automatic mode, model (default Opus), thinking (default on), "About me".
