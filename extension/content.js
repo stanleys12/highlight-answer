@@ -1,5 +1,7 @@
-// Highlight Answer — highlight a question, then click the small "Answer" button beside it (or hold Option while
-// highlighting to answer at once; "Automatic" in the options answers every question-looking highlight):
+// Highlight Answer — highlight a question and let go of the mouse: the answer appears beside it within about half a
+// second (a fast model), and a stronger model double-checks it at the same time (✓, or a correction). The page is
+// not changed until you press Select / Fill — or hold Option while highlighting to apply it at once. ("Answer
+// button" mode in the options waits for a click instead; "Automatic" applies every answer.)
 //   not a question               → no button, nothing happens
 //   question + answer choices    → the right option is clicked
 //   free-response question + box → the answer is typed into the box
@@ -7,9 +9,9 @@
 // A small chip near the highlight says what was done and offers Undo (Esc undoes too).
 (() => {
   if (window.__highlightAnswer) return; window.__highlightAnswer = true;
-  const MIN = 4, MAX = 8000, SETTLE = 150, HIDE_MS = 8000;
-  let timer = null, undo = null, gen = 0, lastMouseUp = 0;
-  let cfg = { enabled: true, mode: 'button', model: 'opus', think: true, speculate: true, aboutMe: '' };
+  const MIN = 4, MAX = 8000, SETTLE = 150, INSTANT_SETTLE = 40, HIDE_MS = 8000;
+  let timer = null, undo = null, gen = 0, lastMouseUp = 0, instantGen = 0;
+  let cfg = { enabled: true, mode: 'instant', model: 'opus', think: true, speculate: true, verify: true, aboutMe: '' };
   chrome.storage.sync.get(cfg, (v) => { cfg = { ...cfg, ...v }; });
   chrome.storage.onChanged.addListener((ch) => { for (const k in ch) cfg[k] = ch[k].newValue; });
 
@@ -140,10 +142,13 @@
     if (el.isContentEditable && sel && !sel.isCollapsed && sel.rangeCount && el.contains(sel.anchorNode)) return { el, text: sel.toString(), range: sel.getRangeAt(0) };
     return null;
   }
+  const isSearch = (el) => el.type === 'search' || /search|combobox/i.test(el.getAttribute('role') || '') || !!el.closest('form[role=search],[role=search]') || /search|query|^q$/i.test([el.name, el.id, el.getAttribute('aria-label'), el.getAttribute('placeholder')].join(' '));
   function typedPrep(ty, force) {
     const text = ty.text.replace(/\s+/g, ' ').trim();
     if (text.length < (force ? 1 : MIN) || text.length > MAX) return null;
-    if (!force && cfg.mode === 'auto' && !looksAsked(text)) return null;
+    // selecting your own words in a box (to delete or retype them) must not pop answers up: outside the Answer-button
+    // mode, only a question-shaped selection or anything in a SEARCH field counts
+    if (!force && (cfg.mode || 'instant') !== 'button' && !looksAsked(text) && !isSearch(ty.el)) return null;
     const rb = (ty.range || ty.el).getBoundingClientRect();
     const where = [ty.el.getAttribute('aria-label'), ty.el.getAttribute('placeholder'), ty.el.getAttribute('name'), ty.el.getAttribute('role')].filter(Boolean).join(' / ');
     return { typed: ty, choices: [], target: null, x: rb.left, y: rb.bottom + 6,
@@ -175,7 +180,7 @@
               url: location.href, title: document.title, context: contextOf(scope), model: cfg.model, think: cfg.think, aboutMe: cfg.aboutMe } };
   }
   // ── a request: streamed through a port; can start before the click (speculation) and be picked up by it ──
-  function startJob(prep, spec) {
+  function startJob(prep, spec, lane) {
     const job = { id: Math.random().toString(36).slice(2), spec, text: '', final: null, firstAt: 0, doneAt: 0, onUpdate: null };
     const port = chrome.runtime.connect({ name: 'answer' });
     port.onMessage.addListener((m) => {
@@ -184,7 +189,7 @@
       if (job.onUpdate) job.onUpdate();
     });
     port.onDisconnect.addListener(() => { if (!job.final) { job.final = { ok: false, error: 'connection to the extension was lost' }; job.doneAt = Date.now(); if (job.onUpdate) job.onUpdate(); } });
-    port.postMessage({ ...prep.data, id: job.id, spec, model: cfg.model, think: cfg.think });
+    port.postMessage({ ...prep.data, id: job.id, spec, lane: lane || 'check', model: cfg.model, think: cfg.think });
     return job;
   }
   let offered = false;
@@ -237,24 +242,112 @@
       hide();
     }
   }
+  // ── instant: the answer on mouse release ──────────────────────────────────────────────────────────
+  // Two requests at once: the FAST lane (Haiku, terse, ~0.5 s to the first answer) is what you see first; the CHECK
+  // lane (your chosen model, default Opus + thinking) confirms it (✓) or replaces it (corrected). A long-answer box
+  // (essay) skips the fast lane — a one-line quick answer is no use there — and streams the check lane instead.
+  const nrm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim();
+  function agrees(f, c) {
+    if (!f || !c || !f.ok || !c.ok || f.kind !== c.kind) return false;
+    if (f.kind === 'choice') return [...f.picks].sort().join('|') === [...c.picks].sort().join('|');
+    if (f.kind !== 'free') return true;
+    const a = nrm(f.answer), b = nrm(c.answer), nums = a.match(/\d+(\.\d+)?/g) || [];
+    return b.includes(a) || a.includes(b) || (nums.length > 0 && nums.every((n) => b.includes(n)));
+  }
+  function instant(prep, applyNow) {
+    const { choices, target, typed, x, y } = prep;
+    const my = ++gen, at = Date.now(); instantGen = my;
+    const essay = target && (target.tagName === 'TEXTAREA' || target.isContentEditable || target.getAttribute('role') === 'textbox' || target.maxLength > 300);
+    const fast = essay ? null : startJob(prep, false, 'fast');
+    const check = cfg.verify !== false || essay ? startJob(prep, true, 'check') : null;
+    let applied = null, reported = false, firstShown = 0;
+    const best = () => {                              // what to act on: the check lane once it has answered, else the fast one
+      const c = check && check.final, f = fast && fast.final;
+      if (c && c.ok && c.kind !== 'none') return c;
+      if (f && f.ok && f.kind !== 'none' && (!check || !c || !c.ok)) return f;
+      return null;
+    };
+    const apply = (r) => {
+      if (!r || (applied && applied === r)) return;
+      if (undo && applied) { try { undo(); } catch {} undo = null; }
+      if (r.kind === 'choice') undo = choose(choices, r.picks);
+      else if (r.kind === 'free' && target) undo = setValue(target, r.answer);
+      applied = r;
+    };
+    const textOf = (r) => (r.kind === 'choice' ? r.picks.join('; ') : r.answer);
+    const render = () => {
+      if (my !== gen) return;
+      const f = fast && fast.final, c = check && check.final;
+      const lead = fast || check;                     // what is shown first
+      const leadText = lead.final ? (lead.final.ok && lead.final.kind !== 'none' ? textOf(lead.final) : '') : lead.text;
+      // not a question (fast lane says so and the check lane agrees, or has not said otherwise): stay out of the way
+      const fastNone = f && (f.kind === 'none' || !f.ok);
+      if ((fastNone && (!check || !c || c.kind === 'none' || !c.ok)) || (!fast && c && (c.kind === 'none' || !c.ok))) {
+        if (fastNone && check && !c) return;          // the check lane may still find a question
+        hide(); return finish();
+      }
+      if (!leadText && !c) { if (Date.now() - at > 600) show('<span class="dot"></span>', [], x, y, true); return; }
+      if (!firstShown) firstShown = Date.now();
+      let html, status = '';
+      const r = best();
+      if (c && c.ok && c.kind !== 'none') {
+        if (!fast || !f) html = '<b>' + esc(textOf(c)) + '</b>';
+        else if (agrees(f, c)) { html = '<b>' + esc(textOf(f)) + '</b>'; status = '✓ double-checked' + (c.kind === 'free' && nrm(c.answer) !== nrm(f.answer) ? '<br>' + esc(c.answer) : ''); }
+        else { html = '<b>' + esc(textOf(c)) + '</b>'; status = '⚠ corrected — the quick answer said “' + esc(textOf(f)) + '”'; }
+        if (c.kind === 'choice' && c.why) status += (status ? '<br>' : '') + esc(c.why);
+      } else if (c && c.kind === 'needs_info') {
+        html = '<b>Needs info about you</b><br>' + esc(c.missing || ''); status = 'Add it under “About me” in the extension options.';
+      } else {
+        html = '<b>' + esc(leadText) + '</b>' + (lead.final ? '' : '<span class="dot"></span>');
+        if (check && !c) status = '<span class="dot"></span>double-checking…'; else if (check && c && !c.ok) status = 'could not double-check: ' + esc(c.error || '');
+      }
+      if (applyNow) apply(r);
+      const acts = [];
+      if (r && !applyNow) {
+        if (r.kind === 'choice' && choices.length) acts.push(['Select', () => { applyNow = true; apply(best()); render(); }]);
+        else if (r.kind === 'free' && target) acts.push(['Fill', () => { applyNow = true; apply(best()); render(); }]);
+      }
+      if (applied) acts.push(['Undo', () => { doUndo(); applyNow = false; applied = null; }]);
+      if (r && r.kind === 'free') acts.push(['Copy', () => navigator.clipboard.writeText(r.answer)]);
+      if (r && r.kind === 'free' && typed && typed.field && !target) acts.push(['Replace', () => { undo = replaceTyped(typed, r.answer); applied = r; render(); }]);
+      acts.push(['×', () => { hide(); gen++; }]);
+      show(html + (status ? '<br><small>' + status + '</small>' : ''), acts, x, y, true);
+      if ((!fast || f) && (!check || c)) finish();
+    };
+    function finish() {
+      if (reported) return; reported = true; clearInterval(tick);
+      const f = fast && fast.final, c = check && check.final;
+      chrome.runtime.sendMessage({ type: 'metric', data: { id: (fast || check).id, checkId: check && check.id, trigger: applyNow ? 'release+apply' : 'release', model: cfg.model, readyBeforeClick: false,
+        clickToFirstMs: firstShown ? firstShown - at : null, clickToDoneMs: (fast || check).doneAt ? (fast || check).doneAt - at : null,
+        checkedMs: check && check.doneAt ? check.doneAt - at : null, agreed: f && c ? agrees(f, c) : null, kind: (c || f || {}).kind || null, ok: !!(c || f || {}).ok } });
+    }
+    const tick = setInterval(render, 250);
+    if (fast) fast.onUpdate = render;
+    if (check) check.onUpdate = render;
+  }
+
   document.addEventListener('mouseup', (e) => {
     if (e.composedPath().includes(host) || !cfg.enabled) return;
     const alt = e.altKey; clearTimeout(timer); lastMouseUp = Date.now();
+    const mode = cfg.mode || 'instant';
     timer = setTimeout(() => {
       const prep = prepare(); if (!prep) return;
-      if (alt || cfg.mode === 'auto') answer(prep); else offer(prep);
-    }, SETTLE);
+      if (mode === 'instant') instant(prep, alt);
+      else if (alt || mode === 'auto') answer(prep); else offer(prep);
+    }, mode === 'instant' ? INSTANT_SETTLE : SETTLE);
   }, true);
-  document.addEventListener('mousedown', (e) => { if (!e.composedPath().includes(host)) { clearTimeout(timer); withdraw(); if (!undo) hide(); } }, true);
+  const dismiss = () => { if (instantGen && instantGen === gen) gen++; };   // an instant chip stops re-drawing once dismissed
+  // a click anywhere else closes the chip (and with it the chance to Undo — Undo lives on the chip and on Esc while it shows)
+  document.addEventListener('mousedown', (e) => { if (!e.composedPath().includes(host)) { clearTimeout(timer); withdraw(); dismiss(); hide(); undo = null; } }, true);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { if (undo) doUndo(); else { offered = false; hide(); } return; }
+    if (e.key === 'Escape') { if (undo) doUndo(); else { offered = false; dismiss(); hide(); } return; }
     withdraw();                                                          // ⌘C or any typing: the button gets out of the way
   }, true);
   // keyboard selection inside a box (⌘A, ⇧+arrows): the box fires "select"
   document.addEventListener('select', (e) => {
     if (!cfg.enabled || e.composedPath().includes(host) || Date.now() - lastMouseUp < 1000) return;   // a mouse selection: the mouseup handler has it (with Option)
     clearTimeout(timer);
-    timer = setTimeout(() => { const ty = typedSelection(); const prep = ty && typedPrep(ty, false); if (!prep) return; if (cfg.mode === 'auto') answer(prep); else offer(prep); }, SETTLE);
+    timer = setTimeout(() => { const ty = typedSelection(); const prep = ty && typedPrep(ty, false); if (!prep) return; if ((cfg.mode || 'instant') === 'instant') instant(prep, false); else if (cfg.mode === 'auto') answer(prep); else offer(prep); }, (cfg.mode || 'instant') === 'instant' ? INSTANT_SETTLE : SETTLE);
   }, true);
   addEventListener('scroll', withdraw, true);
   addEventListener('blur', withdraw);
@@ -268,6 +361,6 @@
     if (msg.type !== 'force') return false;
     const prep = prepare(true, msg.text);
     if (!prep) { reply({ ok: false }); return false; }
-    prep.data.force = true; withdraw(); answer(prep); reply({ ok: true }); return false;
+    prep.data.force = true; withdraw(); if ((cfg.mode || 'instant') === 'instant') instant(prep, true); else answer(prep); reply({ ok: true }); return false;   // a right-click is an explicit ask: apply, like Option
   });
 })();

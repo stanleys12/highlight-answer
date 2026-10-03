@@ -1,7 +1,7 @@
-const D = { enabled: true, mode: 'button', model: 'opus', think: true, speculate: true, aboutMe: '' };
+const D = { enabled: true, mode: 'instant', model: 'opus', think: true, speculate: true, verify: true, aboutMe: '' };
 const $ = (id) => document.getElementById(id);
-chrome.storage.sync.get(D, (v) => { $('enabled').checked = v.enabled; $('model').value = v.model; $('mode').value = v.mode; $('think').checked = v.think; $('speculate').checked = v.speculate; $('aboutMe').value = v.aboutMe; });
-$('save').onclick = () => chrome.storage.sync.set({ enabled: $('enabled').checked, model: $('model').value, mode: $('mode').value, think: $('think').checked, speculate: $('speculate').checked, aboutMe: $('aboutMe').value }, () => {
+chrome.storage.sync.get(D, (v) => { $('enabled').checked = v.enabled; $('model').value = v.model; $('mode').value = v.mode; $('think').checked = v.think; $('speculate').checked = v.speculate; $('verify').checked = v.verify; $('aboutMe').value = v.aboutMe; });
+$('save').onclick = () => chrome.storage.sync.set({ enabled: $('enabled').checked, model: $('model').value, mode: $('mode').value, think: $('think').checked, speculate: $('speculate').checked, verify: $('verify').checked, aboutMe: $('aboutMe').value }, () => {
   $('saved').textContent = 'Saved'; setTimeout(() => { $('saved').textContent = ''; }, 1500);
 });
 
@@ -13,9 +13,10 @@ function loadStats() {
     const el = $('stats');
     if (!s || !s.ok) { el.innerHTML = '<small>' + ((s && s.error) || 'helper not reachable') + '</small>'; return; }
     const w = s.youWaited;
-    let h = `<p><span class="big">${p(w.clickToDoneMs)}</span> <small>typical / slow (p50 / p90) wait from click to finished answer</small><br>
+    let h = `<p><span class="big">${p(w.clickToDoneMs)}</span> <small>typical / slow (p50 / p90) from release (or click) to the answer</small><br>
       <span class="big">${p(w.clickToFirstMs)}</span> <small>wait until the first words appear</small><br>
-      <small>${w.readyBeforeClick} of ${w.of} answers were already done when you clicked.</small></p>`;
+      <span class="big">${p(w.checkedMs)}</span> <small>until the double-check lands</small><br>
+      <small>Quick answer agreed with the double-check ${w.agreed} of ${w.compared} times${w.compared ? ' (' + Math.round(100 * w.agreed / w.compared) + '%)' : ''}. ${w.readyBeforeClick} of ${w.of} answers were already done when you clicked.</small></p>`;
     h += '<table><tr><th>model</th><th>calls</th><th>total</th><th>first output</th><th>first words</th><th>CLI overhead</th><th>avg cost</th><th>avg thinking</th></tr>';
     for (const [m, b] of Object.entries(s.model)) h += `<tr><td>${m}</td><td>${b.calls}</td><td>${p(b.totalMs)}</td><td>${p(b.firstOutputMs)}</td><td>${p(b.firstAnswerMs)}</td><td>${p(b.cliOverheadMs)}</td><td>$${b.avgCost}</td><td>${b.avgThinkTok} tok</td></tr>`;
     h += '</table>';

@@ -37,3 +37,20 @@ Measured on easy questions, from clicking Answer (≈0.8 s after the highlight):
 What does it: CLI non-essential traffic off (−1 s: it made a hidden Haiku call every run), a pre-started spare CLI in stream-json input mode (−0.18 s; a plain `-p` process can't wait — it drops stdin after ~3 s), streamed answers, the request starting when the Answer button appears, identical in-flight requests sharing one call, and a cache (repeats ≈ 2 ms).
 
 Every request is logged to `metrics.jsonl` (server timings, tokens, cost, warm/cold CLI, plus what you waited from click to first words / done). Summary: extension options → Performance, or `curl -H 'X-Highlight-Answer: 1' 127.0.0.1:8799/stats?days=7`.
+
+## Instant mode (default since 0.6.0)
+Highlight a question and let go: the answer appears beside it in ~0.5–0.75 s; the page is changed only when you press **Select** / **Fill** (or hold Option while highlighting, or right-click → Answer).
+
+Two lanes run at once:
+- **quick** — Haiku, no thinking, terse reply (option letter / a short phrase), its own pre-started CLI. First answer token p50 ≈ 0.49 s after it is asked; 33/34 on a CS + quiz benchmark.
+- **double-check** — your chosen model (default Opus + thinking), ~1.9 s typical. Agrees → **✓ double-checked**; disagrees → its answer replaces the quick one, marked **⚠ corrected**.
+
+Long-answer boxes (essays) skip the quick lane and stream the double-check lane. Selecting your own words inside a box only triggers on a question or in a search field.
+
+Model choice for the quick lane (fast benchmark, terse format, no thinking, warm CLI):
+
+| model | right | first answer token p50 / p90 | cost |
+|---|---|---|---|
+| Haiku | 33/34 | 485 / 604 ms | $0.0005 |
+| Sonnet | 34/34 | 1025 / 1584 ms | $0.0021 |
+| Opus | (reasons out loud without thinking) | ~1200 ms | $0.0042 |
