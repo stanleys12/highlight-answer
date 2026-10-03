@@ -8,7 +8,14 @@
 //   question with no box         → the answer is shown, with Copy
 // A small chip near the highlight says what was done and offers Undo (Esc undoes too).
 (() => {
-  if (window.__highlightAnswer) return; window.__highlightAnswer = true;
+  // The newest copy of this script owns the page. Reloading the extension leaves the old copy in every open tab cut
+  // off from the extension (it can no longer ask anything) — that is why highlights did nothing until a right-click
+  // injected a fresh copy. The extension now injects itself into open tabs on install/update, and each copy checks
+  // on every event that it is still the live one.
+  const ME = Math.random();
+  try { if (window.__highlightAnswerHost) window.__highlightAnswerHost.remove(); } catch {}
+  window.__highlightAnswer = ME;
+  const live = () => { try { return window.__highlightAnswer === ME && !!chrome.runtime.id; } catch { return false; } };
   const MIN = 4, MAX = 8000, SETTLE = 150, INSTANT_SETTLE = 40, HIDE_MS = 8000;
   let timer = null, undo = null, gen = 0, lastMouseUp = 0, instantGen = 0;
   let cfg = { enabled: true, mode: 'instant', preset: 'balanced', model: 'opus', think: true, speculate: true, aboutMe: '' };
@@ -21,6 +28,7 @@
   const checkOpts = () => (preset() === 'fast' ? { model: 'sonnet', think: false } : preset() === 'accurate' ? { model: 'opus', think: true, effort: 'high' } : { model: cfg.model, think: cfg.think });
   chrome.storage.sync.get(cfg, (v) => { cfg = { ...cfg, ...v }; });
   chrome.storage.onChanged.addListener((ch) => {
+    if (!live()) return;
     for (const k in ch) cfg[k] = ch[k].newValue;
     if ((ch.preset || ch.enabled) && document.visibilityState === 'visible' && document.hasFocus() && window === top) {
       const label = !cfg.enabled ? 'Highlight Answer off' : { fast: '⚡ Fast — quick answer only', balanced: '⚖️ Balanced — quick answer + double-check', accurate: '🎯 Accurate — Opus only' }[preset()];
@@ -29,7 +37,7 @@
   });
 
   // ── chip ───────────────────────────────────────────────────────────────────────────────────────
-  const host = document.createElement('div');
+  const host = document.createElement('div'); window.__highlightAnswerHost = host;
   const root = host.attachShadow({ mode: 'closed' });
   root.innerHTML = `<style>
     .c{position:fixed;z-index:2147483647;max-width:380px;font:12.5px/1.4 -apple-system,system-ui,sans-serif;color:#eceff4;background:#1e222b;border:1px solid #3b4252;border-radius:9px;padding:7px 10px;box-shadow:0 6px 24px rgba(0,0,0,.35);display:none;gap:8px;align-items:flex-start}
@@ -100,8 +108,13 @@
   }
   const kindOf = (el) => (!el ? null : el.tagName === 'TEXTAREA' ? 'textarea' : el.isContentEditable || el.getAttribute('role') === 'textbox' ? 'multiline' : 'text');
   // is it worth asking at all? (no choices and no box → only an obvious question goes to the model)
-  const QWORD = /^\s*(please\s+)?(describe|explain|tell (us|me)|list|provide|summari[sz]e|write|give|calculate|compute|solve|find|define|compare|identify|what|why|how|when|where|which|who|whom|whose|do|does|did|is|are|was|were|will|would|can|could|should|has|have)\b/i;
-  const looksAsked = (t) => /\?/.test(t) || QWORD.test(t);
+  const QWORD = /^\s*(please\s+)?(describe|explain|tell (us|me)|list|provide|summari[sz]e|write|give|calculate|compute|solve|find|define|compare|identify|name|state|determine|evaluate|estimate|choose|select|pick|convert|simplify|translate|derive|prove|show that|how|what|why|when|where|which|who|whom|whose|do|does|did|is|are|was|were|will|would|can|could|should|has|have|true or false|t\/f)\b/i;
+  // "1.", "Q3:", "(a)", "Question 4 -" in front of a question
+  const NUMBERING = /^\s*(\(?[a-z0-9]{1,3}[.):]|q(uestion)?\s*\d+\s*[.):-]?|#\d+[.):]?)\s+/i;
+  const looksAsked = (t) => /\?/.test(t) || QWORD.test(t) || QWORD.test(t.replace(NUMBERING, '')) || /_{3,}|\btrue or false\b|\(t\/f\)/i.test(t);
+  // short text that isn't question-shaped ("upenn acceptance rate"): the quick model decides, nothing is shown unless
+  // it is a question or a lookup. Prose — several sentences, or long — is never sent.
+  const maybeAsked = (t) => t.length <= 160 && t.split(/\s+/).length <= 20 && !/[.!]\s+[A-Z]/.test(t) && /[a-z]/i.test(t) && !/^https?:\/\//.test(t);
   function contextOf(scope) {                          // the text around the highlight, for the model to read the question in
     let el = scope; while (el.parentElement && el.parentElement !== document.body && txt(el).length < 3000) el = el.parentElement;
     return txt(el).slice(0, 6000);
@@ -185,10 +198,11 @@
     const a = elOf(range.commonAncestorContainer);
     if (!a || a.closest('input,textarea,[contenteditable=""],[contenteditable=true]')) return force ? bare(text) : null;   // selecting inside a box you are typing in
     const { choices, target, scope } = collect(range);
-    if (!force && !choices.length && !target && !looksAsked(text)) return null;   // plain prose: no button, nothing sent
+    const unsure = !force && !choices.length && !target && !looksAsked(text);
+    if (unsure && ((cfg.mode || 'instant') !== 'instant' || !maybeAsked(text))) return null;   // plain prose: nothing sent
     const rb = range.getBoundingClientRect();
-    return { choices, target, x: rb.right + 8, y: rb.bottom + 6,
-      data: { selection: text, choices: choices.map((c) => c.label),
+    return { choices, target, unsure, x: rb.right + 8, y: rb.bottom + 6,
+      data: { selection: text, unsure, choices: choices.map((c) => c.label),
               target: target ? { kind: kindOf(target), label: labelOf(target), maxlength: target.maxLength > 0 ? target.maxLength : 0 } : null,
               url: location.href, title: document.title, context: contextOf(scope), model: cfg.model, think: cfg.think, aboutMe: cfg.aboutMe } };
   }
@@ -272,8 +286,14 @@
     const my = ++gen, at = Date.now(); instantGen = my;
     const essay = target && (target.tagName === 'TEXTAREA' || target.isContentEditable || target.getAttribute('role') === 'textbox' || target.maxLength > 300);
     const P = preset();
-    const fast = essay || P === 'accurate' ? null : startJob(prep, false, 'fast');
-    const check = P !== 'fast' || !fast ? startJob(prep, true, 'check') : null;
+    // an unsure highlight: the quick lane (also in Accurate, where it is only a gate, never shown) decides whether it is
+    // a question at all; the check lane starts only once it says so
+    const gateOnly = prep.unsure && P === 'accurate';
+    const fast = essay || (P === 'accurate' && !prep.unsure) ? null : startJob(prep, false, 'fast');
+    let check = null;
+    const startCheck = () => { if (!check && (P !== 'fast' || !fast)) { check = startJob(prep, true, 'check'); check.onUpdate = () => render(); } };   // render is defined below: look it up when called
+    if (!prep.unsure) startCheck();
+    else if (fast) { const prev = fast.onUpdate; fast.onUpdate = () => { if (fast.final && fast.final.ok && fast.final.kind !== 'none') startCheck(); render(); }; }
     let applied = null, reported = false, firstShown = 0;
     const best = () => {                              // what to act on: the check lane once it has answered, else the fast one
       const c = check && check.final, f = fast && fast.final;
@@ -292,8 +312,8 @@
     const render = () => {
       if (my !== gen) return;
       const f = fast && fast.final, c = check && check.final;
-      const lead = fast || check;                     // what is shown first
-      const leadText = lead.final ? (lead.final.ok && lead.final.kind !== 'none' ? textOf(lead.final) : '') : lead.text;
+      const lead = (gateOnly ? check : fast || check) || fast;   // what is shown first (in Accurate, never the quick gate)
+      const leadText = gateOnly && lead === fast ? '' : lead.final ? (lead.final.ok && lead.final.kind !== 'none' ? textOf(lead.final) : '') : lead.text;
       // not a question (fast lane says so and the check lane agrees, or has not said otherwise): stay out of the way
       const fastNone = f && (f.kind === 'none' || !f.ok);
       if ((fastNone && (!check || !c || c.kind === 'none' || !c.ok)) || (!fast && c && (c.kind === 'none' || !c.ok))) {
@@ -336,11 +356,12 @@
         checkedMs: check && check.doneAt ? check.doneAt - at : null, agreed: f && c ? agrees(f, c) : null, kind: (c || f || {}).kind || null, ok: !!(c || f || {}).ok } });
     }
     const tick = setInterval(render, 250);
-    if (fast) fast.onUpdate = render;
+    if (fast && !prep.unsure) fast.onUpdate = render;
     if (check) check.onUpdate = render;
   }
 
   document.addEventListener('mouseup', (e) => {
+    if (!live()) return;
     if (e.composedPath().includes(host) || !cfg.enabled) return;
     const alt = e.altKey; clearTimeout(timer); lastMouseUp = Date.now();
     const mode = cfg.mode || 'instant';
@@ -352,19 +373,21 @@
   }, true);
   const dismiss = () => { if (instantGen && instantGen === gen) gen++; };   // an instant chip stops re-drawing once dismissed
   // a click anywhere else closes the chip (and with it the chance to Undo — Undo lives on the chip and on Esc while it shows)
-  document.addEventListener('mousedown', (e) => { if (!e.composedPath().includes(host)) { clearTimeout(timer); withdraw(); dismiss(); hide(); undo = null; } }, true);
+  document.addEventListener('mousedown', (e) => { if (!live()) return; if (!e.composedPath().includes(host)) { clearTimeout(timer); withdraw(); dismiss(); hide(); undo = null; } }, true);
   document.addEventListener('keydown', (e) => {
+    if (!live()) return;
     if (e.key === 'Escape') { if (undo) doUndo(); else { offered = false; dismiss(); hide(); } return; }
     withdraw();                                                          // ⌘C or any typing: the button gets out of the way
   }, true);
   // keyboard selection inside a box (⌘A, ⇧+arrows): the box fires "select"
   document.addEventListener('select', (e) => {
+    if (!live()) return;
     if (!cfg.enabled || e.composedPath().includes(host) || Date.now() - lastMouseUp < 1000) return;   // a mouse selection: the mouseup handler has it (with Option)
     clearTimeout(timer);
     timer = setTimeout(() => { const ty = typedSelection(); const prep = ty && typedPrep(ty, false); if (!prep) return; if ((cfg.mode || 'instant') === 'instant') instant(prep, false); else if (cfg.mode === 'auto') answer(prep); else offer(prep); }, (cfg.mode || 'instant') === 'instant' ? INSTANT_SETTLE : SETTLE);
   }, true);
-  addEventListener('scroll', withdraw, true);
-  addEventListener('blur', withdraw);
+  addEventListener('scroll', () => { if (live()) withdraw(); }, true);
+  addEventListener('blur', () => { if (live()) withdraw(); });
   function bare(text) {                                // just the text: no controls to act on, the answer is shown
     return { choices: [], target: null, x: innerWidth / 2 - 190, y: 24,
       data: { selection: String(text).slice(0, MAX), choices: [], target: null, url: location.href, title: document.title,
@@ -372,6 +395,7 @@
   }
   // right-click → "Answer with Highlight Answer"
   chrome.runtime.onMessage.addListener((msg, _s, reply) => {
+    if (!live()) return false;
     if (msg.type !== 'force') return false;
     const prep = prepare(true, msg.text);
     if (!prep) { reply({ ok: false }); return false; }

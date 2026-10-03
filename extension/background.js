@@ -51,6 +51,13 @@ chrome.commands.onCommand.addListener(async (cmd) => {
 // 1) the page's own script answers it (and can still click the option / fill the box);
 // 2) the page has no script yet (a tab opened before the extension was installed / reloaded): put it there, retry;
 // 3) Chrome does not let extensions into the page (PDF viewer, chrome:// pages, the Web Store): a small window answers.
+// On install / update / reload: put the page script into every tab that is already open. Otherwise those tabs keep
+// the old copy, which the reload cut off from the extension — highlights there did nothing until a right-click.
+async function injectOpenTabs() {
+  const tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+  await Promise.all(tabs.map((t) => chrome.scripting.executeScript({ target: { tabId: t.id, allFrames: true }, files: ['content.js'] }).catch(() => {})));
+}
+chrome.runtime.onInstalled.addListener(injectOpenTabs);
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => chrome.contextMenus.create({ id: 'answer', title: 'Answer with Highlight Answer', contexts: ['selection'] }));
 });

@@ -49,11 +49,12 @@ function fastPrompt(q) {
   const ctx = String(q.context || '').slice(0, 1500);
   const head = (ctx ? `Context from the page:\n${ctx}\n\n` : '') + `Question: ${String(q.selection || '').slice(0, 4000)}\n`;
   if (choices.length) return head + `Options:\n${choices.map((o, i) => `${LETTERS[i]}) ${o}`).join('\n')}\nReply with only the letter of the correct option (letters separated by commas only if it asks to select all that apply).${q.typed || q.force ? '' : ' If the text is not a question about these options, reply exactly: -'}`;
+  if (q.unsure) return head + 'This was highlighted on a page and may not be a question. Treat it as one if it asks something OR is a short lookup someone would search for (e.g. "upenn acceptance rate", "speed of light", "boiling point of ethanol") — then reply with only the answer: a word, number, or short phrase; at most one sentence. For anything else — an ordinary sentence, a heading, a name or title on its own, a label, navigation text, a quote — reply exactly: -';
   return head + `Reply with only the answer: a word, number, or short phrase; at most one sentence.${q.typed || q.force ? '' : ' If the text is not a question, reply exactly: -'}`;
 }
 function parseFast(q, text) {
   const t = String(text || '').trim();
-  if (!t || t === '-' || /^-\s*$/.test(t)) return { kind: 'none' };
+  if (!t || /^[\\\-–—\s.]*$/.test(t)) return { kind: 'none' };   // "-", also written as \- or a dash
   const choices = q.choices || [];
   if (choices.length) {
     const picks = [...new Set((t.match(/\b[A-Z]\b/g) || []).map((l) => choices[LETTERS.indexOf(l)]).filter(Boolean))];
@@ -152,7 +153,7 @@ Reply with ONLY one JSON object, no other text:
 
 Getting it RIGHT matters more than speed. Before answering, work the problem out fully: for math, compute it step by step and check the result; for code, trace it line by line; for a multiple-choice question, test EVERY option against the question (watch for "NOT", "EXCEPT", "always", "best", "most likely" and other qualifiers) and pick the one that is actually correct, not the one that merely sounds familiar. If the question depends on information in the page context (a passage, a table, a code block), use it. For a free response, answer what was actually asked, fully, at the level of a strong expert. Keep all of that reasoning to yourself — the JSON is the only output.
 
-${q.typed ? 'The person typed this themselves into a search bar or text field and highlighted it: it is THEIR question to you. Treat it as a question even when it is a bare phrase ("capital of australia", "python list comprehension" = answer what they are looking up). Answer as kind "free": lead with the direct answer, then only as much explanation as helps — usually 1-4 sentences, more only if the question clearly needs it.\n\n' : ''}${q.force ? 'The person right-clicked this highlight and explicitly asked for an answer: treat it as a question or prompt (a bare term or statement means "explain this" / "is this true?") unless it plainly cannot be one.\n\n' : ''}HIGHLIGHTED TEXT:
+${q.typed ? 'The person typed this themselves into a search bar or text field and highlighted it: it is THEIR question to you. Treat it as a question even when it is a bare phrase ("capital of australia", "python list comprehension" = answer what they are looking up). Answer as kind "free": lead with the direct answer, then only as much explanation as helps — usually 1-4 sentences, more only if the question clearly needs it.\n\n' : ''}${q.unsure ? 'A quick check judged this short highlight to be a question or a lookup phrase: answer it as kind "free" (lead with the direct answer, then 1-3 sentences at most) unless it plainly is not one.\n\n' : ''}${q.force ? 'The person right-clicked this highlight and explicitly asked for an answer: treat it as a question or prompt (a bare term or statement means "explain this" / "is this true?") unless it plainly cannot be one.\n\n' : ''}HIGHLIGHTED TEXT:
 ${String(q.selection || '').slice(0, 8000)}
 
 CHOICES: ${choices.length ? JSON.stringify(choices) : 'none'}
@@ -174,7 +175,7 @@ function parse(text) {
 
 // ── jobs: one model call per distinct request; later identical requests join it or read the cache ──────
 const CACHE = new Map(), CACHE_MAX = 300, JOBS = new Map();
-const keyOf = (q) => crypto.createHash('sha1').update(JSON.stringify([q.lane === 'fast' ? 'fast' : 'check', q.selection, q.choices, q.target, q.model, q.think !== false, q.effort || 'high', q.aboutMe, !!q.typed, !!q.force, String(q.context || '').slice(0, 6000)])).digest('hex');
+const keyOf = (q) => crypto.createHash('sha1').update(JSON.stringify([q.lane === 'fast' ? 'fast' : 'check', q.selection, !!q.unsure, q.choices, q.target, q.model, q.think !== false, q.effort || 'high', q.aboutMe, !!q.typed, !!q.force, String(q.context || '').slice(0, 6000)])).digest('hex');
 function record(o) { fs.appendFile(METRICS, JSON.stringify({ ts: new Date().toISOString(), ...o }) + '\n', () => {}); }
 
 function run(q) {
@@ -189,7 +190,7 @@ function run(q) {
     for (let i = 0; i < 2; i++) {                    // one retry: a CLI that died, or a reply that was not JSON
       const emit = (t) => { if (!firstAnswer && t.trim()) firstAnswer = Date.now() - t0; if (i === 0 || !job.events.length) push({ type: 'delta', text: t }); };
       // the fast lane streams its plain reply as is (a free answer), except option letters and the "-" for not-a-question
-      const stream = fast ? (t) => { if (!(q.choices || []).length) { const so = (job._raw = (job._raw || '') + t); if (so.trim() !== '-' && !/^-?\s*$/.test(so)) emit(job._sent === undefined ? (job._sent = so) : t); } else if (!firstAnswer && t.trim()) firstAnswer = Date.now() - t0; } : answerStreamer(emit);
+      const stream = fast ? (t) => { if (!(q.choices || []).length) { const so = (job._raw = (job._raw || '') + t); if (!/^[\\\-–—\s.]*$/.test(so)) emit(job._sent === undefined ? (job._sent = so) : t); } else if (!firstAnswer && t.trim()) firstAnswer = Date.now() - t0; } : answerStreamer(emit);
       try { r = await ask(fast ? fastPrompt(q) : prompt(q), model, effort, stream, fast ? 'fast' : 'check'); spent += r.cost; j = fast ? parseFast(q, r.text) : parse(r.text); break; }
       catch (e) { err = r && !j ? 'unreadable answer: ' + String(r.text).slice(0, 120) : String(e.message || e).slice(0, 200); r = null; }
     }
