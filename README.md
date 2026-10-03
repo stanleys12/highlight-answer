@@ -54,3 +54,14 @@ Model choice for the quick lane (fast benchmark, terse format, no thinking, warm
 | Haiku | 33/34 | 485 / 604 ms | $0.0005 |
 | Sonnet | 34/34 | 1025 / 1584 ms | $0.0021 |
 | Opus | (reasons out loud without thinking) | ~1200 ms | $0.0042 |
+
+## Speed presets (0.7.0)
+Toolbar icon → pick one (badge shows **F / B / A**), or **⌥⇧A** to cycle (change at chrome://extensions/shortcuts).
+
+| preset | what you get | measured (release → answer) |
+|---|---|---|
+| ⚡ Fast | Haiku's quick answer only | ~0.68 s |
+| ⚖️ Balanced (default) | quick answer, then double-checked: ✓ or ⚠ corrected | 0.62 s, ✓ at ~1.8 s |
+| 🎯 Accurate | no quick guess — only Opus + thinking is shown or applied | ~2 s easy; 20 s+ on very hard ones |
+
+Accurate uses effort "high": "max" scored the same (10/10 on the hard set) at twice the cost and up to 51 s.

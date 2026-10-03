@@ -1,20 +1,48 @@
 {
   "manifest_version": 3,
   "name": "Highlight Answer",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Highlight a question: picks the right choice, or drafts an answer into its box. Not a question: does nothing. Talks only to a helper on this computer.",
-  "permissions": ["storage", "contextMenus", "scripting", "activeTab"],
-  "host_permissions": ["http://127.0.0.1:8799/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "Highlight Answer — click to turn on/off" },
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8799/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Highlight Answer \u2014 speed preset",
+    "default_popup": "popup.html"
+  },
   "options_page": "options.html",
-  "omnibox": { "keyword": "ask" },
+  "omnibox": {
+    "keyword": "ask"
+  },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": true
     }
-  ]
+  ],
+  "commands": {
+    "cycle-preset": {
+      "suggested_key": {
+        "default": "Alt+Shift+A",
+        "mac": "Alt+Shift+A"
+      },
+      "description": "Cycle speed preset: Fast \u2192 Balanced \u2192 Accurate"
+    }
+  }
 }

@@ -65,10 +65,13 @@ function parseFast(q, text) {
 // One CLI process per question. It is started in stream-json INPUT mode, which waits for its message indefinitely,
 // so a SPARE can be started ahead of time for the settings in use: measured, that takes the CLI's own start-up off
 // the clock (overhead p50 274 ms → 92 ms). A plain `-p` process cannot wait — it gives up on stdin after ~3 s.
-function spawnCli(model, think, lane) {
+// effort: 'low' = no thinking; 'high' (default) / 'xhigh' / 'max' = thinking, as much as the question needs, up to that level
+const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+function spawnCli(model, effort, lane) {
+  const think = effort !== 'low';
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'hla-'));
   const p = spawn(claudeBin(), ['-p', '--model', model, '--max-turns', '3', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
-    '--system-prompt', lane === 'fast' ? FAST_SYSTEM : SYSTEM, '--effort', think ? 'high' : 'low',
+    '--system-prompt', lane === 'fast' ? FAST_SYSTEM : SYSTEM, '--effort', effort,
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--tools', '', '--dangerously-skip-permissions'],
     { cwd, env: { ...process.env, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', ...(think ? {} : { MAX_THINKING_TOKENS: '0' }) } });
   const cli = { p, cwd, bornAt: Date.now(), dead: false, onLine: null, err: '' };
@@ -81,22 +84,22 @@ function spawnCli(model, think, lane) {
 }
 const SPARE = new Map();                              // "model|think" → a started CLI waiting for its question
 const SPARE_MAX_AGE = 30 * 60e3;                       // renewed now and then so a stale one (new CLI version, expired login) never answers
-function takeCli(model, think, lane) {
-  const k = model + '|' + think + '|' + (lane || 'check'), s = SPARE.get(k); SPARE.delete(k);
+function takeCli(model, effort, lane) {
+  const k = model + '|' + effort + '|' + (lane || 'check'), s = SPARE.get(k); SPARE.delete(k);
   const warm = s && !s.dead && Date.now() - s.bornAt < SPARE_MAX_AGE;
   if (s && !warm) try { s.p.kill(); } catch {}
-  setTimeout(() => { if (!SPARE.has(k)) SPARE.set(k, spawnCli(model, think, lane)); }, 50);   // the next question's spare
-  return { cli: warm ? s : spawnCli(model, think, lane), warm };
+  setTimeout(() => { if (!SPARE.has(k)) SPARE.set(k, spawnCli(model, effort, lane)); }, 50);   // the next question's spare
+  return { cli: warm ? s : spawnCli(model, effort, lane), warm };
 }
-function primeSpare(model, think, lane) { const k = model + '|' + think + '|' + (lane || 'check'); const s = SPARE.get(k); if (!s || s.dead || Date.now() - s.bornAt >= SPARE_MAX_AGE) { if (s) try { s.p.kill(); } catch {} SPARE.set(k, spawnCli(model, think, lane)); } }
-setInterval(() => { for (const k of [...SPARE.keys()]) { const [m, t, l] = k.split('|'); primeSpare(m, t === 'true', l); } }, 60e3).unref();
+function primeSpare(model, effort, lane) { const k = model + '|' + effort + '|' + (lane || 'check'); const s = SPARE.get(k); if (!s || s.dead || Date.now() - s.bornAt >= SPARE_MAX_AGE) { if (s) try { s.p.kill(); } catch {} SPARE.set(k, spawnCli(model, effort, lane)); } }
+setInterval(() => { for (const k of [...SPARE.keys()]) { const [m, e, l] = k.split('|'); primeSpare(m, e, l); } }, 60e3).unref();
 process.on('exit', () => { for (const s of SPARE.values()) try { s.p.kill(); } catch {} });
 
 // One question, streamed. onText(chunk) gets the reply text as it is written; resolves with the final reply + usage.
 // Thinking: effort "high" lets the model reason as long as a hard question needs (an easy one barely thinks).
-function ask(prompt, model, think, onText, lane) {
+function ask(prompt, model, effort, onText, lane) {
   return new Promise((resolve, reject) => {
-    const { cli, warm } = takeCli(model, think, lane);
+    const { cli, warm } = takeCli(model, effort, lane);
     const t0 = Date.now(); let firstAny = 0, result = null;
     const kill = setTimeout(() => cli.p.kill('SIGKILL'), 240000);
     cli.onLine = (line) => {
@@ -171,12 +174,13 @@ function parse(text) {
 
 // ── jobs: one model call per distinct request; later identical requests join it or read the cache ──────
 const CACHE = new Map(), CACHE_MAX = 300, JOBS = new Map();
-const keyOf = (q) => crypto.createHash('sha1').update(JSON.stringify([q.lane === 'fast' ? 'fast' : 'check', q.selection, q.choices, q.target, q.model, q.think !== false, q.aboutMe, !!q.typed, !!q.force, String(q.context || '').slice(0, 6000)])).digest('hex');
+const keyOf = (q) => crypto.createHash('sha1').update(JSON.stringify([q.lane === 'fast' ? 'fast' : 'check', q.selection, q.choices, q.target, q.model, q.think !== false, q.effort || 'high', q.aboutMe, !!q.typed, !!q.force, String(q.context || '').slice(0, 6000)])).digest('hex');
 function record(o) { fs.appendFile(METRICS, JSON.stringify({ ts: new Date().toISOString(), ...o }) + '\n', () => {}); }
 
 function run(q) {
   const fast = q.lane === 'fast';
-  const model = fast ? 'haiku' : MODELS.has(q.model) ? q.model : 'opus', think = fast ? false : q.think !== false;
+  const model = fast ? 'haiku' : MODELS.has(q.model) ? q.model : 'opus';
+  const effort = fast || q.think === false ? 'low' : EFFORTS.has(q.effort) ? q.effort : 'high', think = effort !== 'low';
   const job = { events: [], subs: new Set(), done: false };
   const push = (ev) => { job.events.push(ev); for (const s of job.subs) s(ev); if (ev.type === 'final') job.done = true; };
   const t0 = Date.now(); let firstAnswer = 0;
@@ -186,7 +190,7 @@ function run(q) {
       const emit = (t) => { if (!firstAnswer && t.trim()) firstAnswer = Date.now() - t0; if (i === 0 || !job.events.length) push({ type: 'delta', text: t }); };
       // the fast lane streams its plain reply as is (a free answer), except option letters and the "-" for not-a-question
       const stream = fast ? (t) => { if (!(q.choices || []).length) { const so = (job._raw = (job._raw || '') + t); if (so.trim() !== '-' && !/^-?\s*$/.test(so)) emit(job._sent === undefined ? (job._sent = so) : t); } else if (!firstAnswer && t.trim()) firstAnswer = Date.now() - t0; } : answerStreamer(emit);
-      try { r = await ask(fast ? fastPrompt(q) : prompt(q), model, think, stream, fast ? 'fast' : 'check'); spent += r.cost; j = fast ? parseFast(q, r.text) : parse(r.text); break; }
+      try { r = await ask(fast ? fastPrompt(q) : prompt(q), model, effort, stream, fast ? 'fast' : 'check'); spent += r.cost; j = fast ? parseFast(q, r.text) : parse(r.text); break; }
       catch (e) { err = r && !j ? 'unreadable answer: ' + String(r.text).slice(0, 120) : String(e.message || e).slice(0, 200); r = null; }
     }
     let out;
@@ -201,7 +205,7 @@ function run(q) {
       if (j.kind === 'free' && q.target && q.target.maxlength && String(j.answer).length > q.target.maxlength) j.answer = String(j.answer).slice(0, q.target.maxlength);
       out = { ok: true, ...j, model, cost: spent, ms: Date.now() - t0 };
     }
-    record({ type: 'server', id: q.id, spec: !!q.spec, lane: fast ? 'fast' : 'check', model, think, kind: out.kind || null, ok: out.ok, error: out.error, cached: false,
+    record({ type: 'server', id: q.id, spec: !!q.spec, lane: fast ? 'fast' : 'check', model, think, effort, kind: out.kind || null, ok: out.ok, error: out.error, cached: false,
       totalMs: Date.now() - t0, firstOutputMs: r ? r.firstAnyMs : null, firstAnswerMs: firstAnswer || null, apiMs: r ? r.apiMs : null,
       cliOverheadMs: r ? Date.now() - t0 - r.apiMs : null, warmCli: r ? r.warm : null, inTok: r && r.inTok, outTok: r && r.outTok, thinkTok: r && r.thinkTok, cost: spent,
       selLen: String(q.selection || '').length, ctxLen: String(q.context || '').length, typed: !!q.typed, force: !!q.force, choices: (q.choices || []).length });
@@ -292,4 +296,4 @@ http.createServer((req, res) => {
     let fin; try { await answer(q, (ev) => { if (ev.type === 'final') fin = ev; }); } catch (e) { fin = { ok: false, error: String(e.message || e).slice(0, 200) }; }
     const { type, ...rest } = fin || { ok: false, error: 'no answer' }; send(200, rest);
   });
-}).listen(PORT, '127.0.0.1', () => { console.log('highlight-answer helper on 127.0.0.1:' + PORT); primeSpare('opus', true, 'check'); primeSpare('haiku', false, 'fast'); });
+}).listen(PORT, '127.0.0.1', () => { console.log('highlight-answer helper on 127.0.0.1:' + PORT); primeSpare('opus', 'high', 'check'); primeSpare('haiku', 'low', 'fast'); });

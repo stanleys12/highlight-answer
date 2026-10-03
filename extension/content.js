@@ -11,9 +11,22 @@
   if (window.__highlightAnswer) return; window.__highlightAnswer = true;
   const MIN = 4, MAX = 8000, SETTLE = 150, INSTANT_SETTLE = 40, HIDE_MS = 8000;
   let timer = null, undo = null, gen = 0, lastMouseUp = 0, instantGen = 0;
-  let cfg = { enabled: true, mode: 'instant', model: 'opus', think: true, speculate: true, verify: true, aboutMe: '' };
+  let cfg = { enabled: true, mode: 'instant', preset: 'balanced', model: 'opus', think: true, speculate: true, aboutMe: '' };
+  // SPEED PRESETS (toolbar popup, or ⌥⇧A to cycle):
+  //   fast     — Haiku's quick answer only (~0.5 s); essays: Sonnet without thinking
+  //   balanced — quick answer, double-checked by the chosen model (default Opus + thinking): ✓ or corrected
+  //   accurate — no quick guess at all: only Opus + thinking is shown and applied (measured: effort "max" was no more
+  //              accurate than "high" on the hard set, twice the cost and up to 51 s, so it stays "high")
+  const preset = () => (['fast', 'balanced', 'accurate'].includes(cfg.preset) ? cfg.preset : 'balanced');
+  const checkOpts = () => (preset() === 'fast' ? { model: 'sonnet', think: false } : preset() === 'accurate' ? { model: 'opus', think: true, effort: 'high' } : { model: cfg.model, think: cfg.think });
   chrome.storage.sync.get(cfg, (v) => { cfg = { ...cfg, ...v }; });
-  chrome.storage.onChanged.addListener((ch) => { for (const k in ch) cfg[k] = ch[k].newValue; });
+  chrome.storage.onChanged.addListener((ch) => {
+    for (const k in ch) cfg[k] = ch[k].newValue;
+    if ((ch.preset || ch.enabled) && document.visibilityState === 'visible' && document.hasFocus() && window === top) {
+      const label = !cfg.enabled ? 'Highlight Answer off' : { fast: '⚡ Fast — quick answer only', balanced: '⚖️ Balanced — quick answer + double-check', accurate: '🎯 Accurate — Opus only' }[preset()];
+      show(label, [], innerWidth - 300, 16, false); clearTimeout(hideT); hideT = setTimeout(hide, 1600);
+    }
+  });
 
   // ── chip ───────────────────────────────────────────────────────────────────────────────────────
   const host = document.createElement('div');
@@ -180,7 +193,7 @@
               url: location.href, title: document.title, context: contextOf(scope), model: cfg.model, think: cfg.think, aboutMe: cfg.aboutMe } };
   }
   // ── a request: streamed through a port; can start before the click (speculation) and be picked up by it ──
-  function startJob(prep, spec, lane) {
+  function startJob(prep, spec, lane, over) {
     const job = { id: Math.random().toString(36).slice(2), spec, text: '', final: null, firstAt: 0, doneAt: 0, onUpdate: null };
     const port = chrome.runtime.connect({ name: 'answer' });
     port.onMessage.addListener((m) => {
@@ -189,7 +202,7 @@
       if (job.onUpdate) job.onUpdate();
     });
     port.onDisconnect.addListener(() => { if (!job.final) { job.final = { ok: false, error: 'connection to the extension was lost' }; job.doneAt = Date.now(); if (job.onUpdate) job.onUpdate(); } });
-    port.postMessage({ ...prep.data, id: job.id, spec, lane: lane || 'check', model: cfg.model, think: cfg.think });
+    port.postMessage({ ...prep.data, id: job.id, spec, lane: lane || 'check', ...(over || checkOpts()) });
     return job;
   }
   let offered = false;
@@ -258,8 +271,9 @@
     const { choices, target, typed, x, y } = prep;
     const my = ++gen, at = Date.now(); instantGen = my;
     const essay = target && (target.tagName === 'TEXTAREA' || target.isContentEditable || target.getAttribute('role') === 'textbox' || target.maxLength > 300);
-    const fast = essay ? null : startJob(prep, false, 'fast');
-    const check = cfg.verify !== false || essay ? startJob(prep, true, 'check') : null;
+    const P = preset();
+    const fast = essay || P === 'accurate' ? null : startJob(prep, false, 'fast');
+    const check = P !== 'fast' || !fast ? startJob(prep, true, 'check') : null;
     let applied = null, reported = false, firstShown = 0;
     const best = () => {                              // what to act on: the check lane once it has answered, else the fast one
       const c = check && check.final, f = fast && fast.final;
@@ -286,7 +300,7 @@
         if (fastNone && check && !c) return;          // the check lane may still find a question
         hide(); return finish();
       }
-      if (!leadText && !c) { if (Date.now() - at > 600) show('<span class="dot"></span>', [], x, y, true); return; }
+      if (!leadText && !c) { const el = Date.now() - at; if (el > 600) show('<span class="dot"></span>' + (el > 1500 ? 'thinking… ' + Math.round(el / 1000) + 's' : ''), [], x, y, true); return; }
       if (!firstShown) firstShown = Date.now();
       let html, status = '';
       const r = best();

@@ -12,8 +12,9 @@
 <label for="mode">When I highlight a question</label>
 <select id="mode"><option value="instant">Answer on release — shown beside the highlight in ~½ s; page changed only when you press Select / Fill (default)</option><option value="button">Show a small Answer button first</option><option value="auto">Answer and apply automatically</option></select>
 <br><small>Either way, holding Option (⌥) while highlighting answers immediately.</small>
-<label><input type="checkbox" id="verify"> Double-check every quick answer with the model below <small>(✓ when it agrees, corrected when it doesn't; the quick answer itself always comes from Haiku, the fastest)</small></label>
-<label for="model">Model for double-checking and long answers</label>
+<label for="preset">Speed preset <small>(also in the toolbar popup, or ⌥⇧A to cycle)</small></label>
+<select id="preset"><option value="fast">⚡ Fast — quick answer only (~0.5 s, Haiku)</option><option value="balanced">⚖️ Balanced — quick answer + double-check (default)</option><option value="accurate">🎯 Accurate — Opus with thinking only, no quick guess</option></select>
+<label for="model">Model for the Balanced double-check and long answers</label>
 <select id="model"><option value="opus">Opus — most accurate (default)</option><option value="sonnet">Sonnet — faster, cheaper</option><option value="haiku">Haiku — fastest, cheapest, weakest on hard questions</option></select>
 <label><input type="checkbox" id="think"> Think before answering <small>(slower, much better on hard questions)</small></label>
 <label><input type="checkbox" id="speculate"> In Answer-button mode, start answering as soon as the button appears <small>(the answer is often ready by the time you click; costs a little for question-like highlights you don't click)</small></label>

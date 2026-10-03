@@ -1,7 +1,7 @@
-const D = { enabled: true, mode: 'instant', model: 'opus', think: true, speculate: true, verify: true, aboutMe: '' };
+const D = { enabled: true, mode: 'instant', model: 'opus', think: true, speculate: true, preset: 'balanced', aboutMe: '' };
 const $ = (id) => document.getElementById(id);
-chrome.storage.sync.get(D, (v) => { $('enabled').checked = v.enabled; $('model').value = v.model; $('mode').value = v.mode; $('think').checked = v.think; $('speculate').checked = v.speculate; $('verify').checked = v.verify; $('aboutMe').value = v.aboutMe; });
-$('save').onclick = () => chrome.storage.sync.set({ enabled: $('enabled').checked, model: $('model').value, mode: $('mode').value, think: $('think').checked, speculate: $('speculate').checked, verify: $('verify').checked, aboutMe: $('aboutMe').value }, () => {
+chrome.storage.sync.get(D, (v) => { $('enabled').checked = v.enabled; $('model').value = v.model; $('mode').value = v.mode; $('think').checked = v.think; $('speculate').checked = v.speculate; $('preset').value = v.preset; $('aboutMe').value = v.aboutMe; });
+$('save').onclick = () => chrome.storage.sync.set({ enabled: $('enabled').checked, model: $('model').value, mode: $('mode').value, think: $('think').checked, speculate: $('speculate').checked, preset: $('preset').value, aboutMe: $('aboutMe').value }, () => {
   $('saved').textContent = 'Saved'; setTimeout(() => { $('saved').textContent = ''; }, 1500);
 });
 

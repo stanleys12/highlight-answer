@@ -33,15 +33,19 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
-// the toolbar button turns it on and off
+// the toolbar button opens the preset picker (popup.html); the badge shows the preset — F / B / A — or OFF
+const PRESETS = ['fast', 'balanced', 'accurate'];
 async function badge() {
-  const { enabled = true } = await chrome.storage.sync.get('enabled');
-  await chrome.action.setBadgeText({ text: enabled ? '' : 'OFF' });
-  await chrome.action.setBadgeBackgroundColor({ color: '#777' });
+  const { enabled = true, preset = 'balanced' } = await chrome.storage.sync.get(['enabled', 'preset']);
+  await chrome.action.setBadgeText({ text: !enabled ? 'OFF' : { fast: 'F', balanced: 'B', accurate: 'A' }[preset] || 'B' });
+  await chrome.action.setBadgeBackgroundColor({ color: !enabled ? '#777' : { fast: '#d08770', balanced: '#5e81ac', accurate: '#a3be8c' }[preset] || '#5e81ac' });
 }
-chrome.action.onClicked.addListener(async () => {
-  const { enabled = true } = await chrome.storage.sync.get('enabled');
-  await chrome.storage.sync.set({ enabled: !enabled }); badge();
+chrome.storage.onChanged.addListener((ch) => { if (ch.preset || ch.enabled) badge(); });
+// ⌥⇧A (change it at chrome://extensions/shortcuts): Fast → Balanced → Accurate → Fast
+chrome.commands.onCommand.addListener(async (cmd) => {
+  if (cmd !== 'cycle-preset') return;
+  const { preset = 'balanced' } = await chrome.storage.sync.get('preset');
+  await chrome.storage.sync.set({ preset: PRESETS[(PRESETS.indexOf(preset) + 1) % PRESETS.length], enabled: true });
 });
 // ── right-click backup: "Answer with Highlight Answer" on any selection ─────────────────────────────────
 // 1) the page's own script answers it (and can still click the option / fill the box);
