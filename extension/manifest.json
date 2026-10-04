@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Highlight Answer",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Highlight a question: picks the right choice, or drafts an answer into its box. Not a question: does nothing. Talks only to a helper on this computer.",
   "permissions": [
     "storage",

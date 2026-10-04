@@ -10,6 +10,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .then((r) => r.json()).then(sendResponse).catch((e) => sendResponse({ ok: false, error: down(e) }));
     return true;
   }
+  if (msg.type === 'lang') { chrome.i18n.detectLanguage(msg.text || '', (r) => sendResponse(r || null)); return true; }   // Chrome's own detector, on this computer
   if (msg.type === 'metric') { fetch(HELPER + '/metric', { method: 'POST', headers: H, body: JSON.stringify(msg.data) }).catch(() => {}); return false; }
   if (msg.type === 'stats') { fetch(HELPER + '/stats?days=' + (msg.days || 7), { headers: H }).then((r) => r.json()).then(sendResponse).catch((e) => sendResponse({ ok: false, error: down(e) })); return true; }
   return false;

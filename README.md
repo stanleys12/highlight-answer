@@ -65,3 +65,10 @@ Toolbar icon → pick one (badge shows **F / B / A**), or **⌥⇧A** to cycle (
 | 🎯 Accurate | no quick guess — only Opus + thinking is shown or applied | ~2 s easy; 20 s+ on very hard ones |
 
 Accurate uses effort "high": "max" scored the same (10/10 on the hard set) at twice the cost and up to 51 s.
+
+## Translation (0.9.0)
+Highlight text in another language → its English translation appears on top of the chip (streamed; **Copy English**). If it is also a question, the answer appears underneath as usual (Select / Fill work on the original-language options).
+
+- Detection: Chrome's built-in detector (local, free) + a script check for short non-Latin text. The translator names the source language itself (Chrome called a Spanish sentence "Portuguese").
+- Model: **Sonnet** (Opus in Accurate). Measured on idiomatic zh/ja/es/de/fr/ko/ar: Sonnet first token 579 ms vs Haiku 509 / Opus 1447; Sonnet ≈ Opus quality, both caught every idiom and nuance; Haiku missed Korean hearsay and once answered about itself instead of translating Japanese.
+- Page text is fenced as material to translate — "ignore your instructions…" in Spanish gets translated, not obeyed.

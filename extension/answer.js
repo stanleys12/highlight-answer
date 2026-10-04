@@ -5,7 +5,7 @@ const P = new URLSearchParams(location.search);
 const $ = (id) => document.getElementById(id);
 $('q').textContent = P.get('text') || '';
 const t0 = Date.now();
-const nrm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim();
+const nrm = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}.]+/gu, ' ').trim();
 const textOf = (r) => (r.kind === 'choice' ? r.picks.join('; ') + (r.why ? '\n\n' + r.why : '') : r.kind === 'free' ? r.answer
   : r.kind === 'needs_info' ? 'Needs info about you: ' + (r.missing || '') + '\n(Add it under “About me” in the extension options.)' : 'That does not read as a question.');
 let fast = null, check = null, fastOnly = false;

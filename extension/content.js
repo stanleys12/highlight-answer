@@ -43,6 +43,7 @@
     .c{position:fixed;z-index:2147483647;max-width:380px;font:12.5px/1.4 -apple-system,system-ui,sans-serif;color:#eceff4;background:#1e222b;border:1px solid #3b4252;border-radius:9px;padding:7px 10px;box-shadow:0 6px 24px rgba(0,0,0,.35);display:none;gap:8px;align-items:flex-start}
     .c.on{display:flex}.c b{color:#88c0d0;font-weight:600}.c small{color:#9aa3b2}.t{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word;max-height:12em;overflow:auto}
     button{all:unset;cursor:pointer;color:#88c0d0;padding:2px 6px;border-radius:5px;font-size:12px}button:hover{background:#2e3440}
+    .c hr{border:0;border-top:1px solid #3b4252;margin:6px 0}
     .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#88c0d0;margin-right:4px;animation:p 1s infinite}@keyframes p{50%{opacity:.25}}
   </style><div class="c"><div class="t"></div><div class="a"></div></div>`;
   const chip = root.querySelector('.c'), tEl = root.querySelector('.t'), aEl = root.querySelector('.a');
@@ -211,7 +212,8 @@
     const job = { id: Math.random().toString(36).slice(2), spec, text: '', final: null, firstAt: 0, doneAt: 0, onUpdate: null };
     const port = chrome.runtime.connect({ name: 'answer' });
     port.onMessage.addListener((m) => {
-      if (m.type === 'delta') { job.text += m.text; if (!job.firstAt) job.firstAt = Date.now(); }
+      if (m.type === 'meta') { if (m.lang) job.lang = m.lang; }
+      else if (m.type === 'delta') { job.text += m.text; if (!job.firstAt) job.firstAt = Date.now(); }
       else if (m.type === 'final') { job.final = m; job.doneAt = Date.now(); if (!job.firstAt) job.firstAt = job.doneAt; try { port.disconnect(); } catch {} }
       if (job.onUpdate) job.onUpdate();
     });
@@ -273,7 +275,7 @@
   // Two requests at once: the FAST lane (Haiku, terse, ~0.5 s to the first answer) is what you see first; the CHECK
   // lane (your chosen model, default Opus + thinking) confirms it (✓) or replaces it (corrected). A long-answer box
   // (essay) skips the fast lane — a one-line quick answer is no use there — and streams the check lane instead.
-  const nrm = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9.]+/g, ' ').trim();
+  const nrm = (v) => String(v || '').toLowerCase().replace(/[^\p{L}\p{N}.]+/gu, ' ').trim();   // any script
   function agrees(f, c) {
     if (!f || !c || !f.ok || !c.ok || f.kind !== c.kind) return false;
     if (f.kind === 'choice') return [...f.picks].sort().join('|') === [...c.picks].sort().join('|');
@@ -286,13 +288,33 @@
     const my = ++gen, at = Date.now(); instantGen = my;
     const essay = target && (target.tagName === 'TEXTAREA' || target.isContentEditable || target.getAttribute('role') === 'textbox' || target.maxLength > 300);
     const P = preset();
+    // TRANSLATION: a non-English highlight is translated (Sonnet; Opus in Accurate) and shown on top; if it is also a
+    // question, the answer lanes run as usual underneath. Plain non-English prose gets only the translation.
+    const tr = prep.translate ? startJob(prep, false, 'translate', { model: P === 'accurate' ? 'opus' : 'sonnet', lang: prep.translate.name }) : null;
+    const answerable = prep.answerable !== false;
+    const trHtml = () => {
+      if (!tr) return '';
+      // the translator's own reading of the language beats Chrome's detector (which called Spanish "Portuguese")
+      const name = (tr.final && tr.final.lang) || tr.lang || (prep.translate.sure ? prep.translate.name : '');
+      const head = '<small>🌐 ' + (name ? esc(name) + ' → ' : '') + 'English</small><br>';
+      if (!tr.final) return head + (tr.text ? '<b>' + esc(tr.text) + '</b><span class="dot"></span>' : '<span class="dot"></span><small>translating…</small>');
+      if (tr.final.ok && tr.final.kind === 'translation') return head + '<b>' + esc(tr.final.text) + '</b>';
+      return tr.final.ok ? '' : head + '<small>could not translate: ' + esc(tr.final.error || '') + '</small>';
+    };
+    const trActs = () => (tr && tr.final && tr.final.kind === 'translation' ? [['Copy English', () => navigator.clipboard.writeText(tr.final.text)]] : []);
+    // the chip: translation on top, the answer (if any) below
+    const out = (html, acts) => {
+      const t = trHtml();
+      if (!t && !html) { hide(); return; }
+      show(t + (t && html ? '<hr>' : '') + (html || ''), [...trActs(), ...(acts || [['×', () => { hide(); gen++; }]])], x, y, true);
+    };
     // an unsure highlight: the quick lane (also in Accurate, where it is only a gate, never shown) decides whether it is
     // a question at all; the check lane starts only once it says so
     const gateOnly = prep.unsure && P === 'accurate';
-    const fast = essay || (P === 'accurate' && !prep.unsure) ? null : startJob(prep, false, 'fast');
+    const fast = !answerable || essay || (P === 'accurate' && !prep.unsure) ? null : startJob(prep, false, 'fast');
     let check = null;
     const startCheck = () => { if (!check && (P !== 'fast' || !fast)) { check = startJob(prep, true, 'check'); check.onUpdate = () => render(); } };   // render is defined below: look it up when called
-    if (!prep.unsure) startCheck();
+    if (answerable && !prep.unsure) startCheck();
     else if (fast) { const prev = fast.onUpdate; fast.onUpdate = () => { if (fast.final && fast.final.ok && fast.final.kind !== 'none') startCheck(); render(); }; }
     let applied = null, reported = false, firstShown = 0;
     const best = () => {                              // what to act on: the check lane once it has answered, else the fast one
@@ -311,16 +333,18 @@
     const textOf = (r) => (r.kind === 'choice' ? r.picks.join('; ') : r.answer);
     const render = () => {
       if (my !== gen) return;
+      if (tr && (!tr.final || tr.final.kind === 'translation') && trDone()) clearInterval(tick);
+      if (!fast && !check) { out('', null); return; }       // translation only
       const f = fast && fast.final, c = check && check.final;
       const lead = (gateOnly ? check : fast || check) || fast;   // what is shown first (in Accurate, never the quick gate)
       const leadText = gateOnly && lead === fast ? '' : lead.final ? (lead.final.ok && lead.final.kind !== 'none' ? textOf(lead.final) : '') : lead.text;
       // not a question (fast lane says so and the check lane agrees, or has not said otherwise): stay out of the way
       const fastNone = f && (f.kind === 'none' || !f.ok);
       if ((fastNone && (!check || !c || c.kind === 'none' || !c.ok)) || (!fast && c && (c.kind === 'none' || !c.ok))) {
-        if (fastNone && check && !c) return;          // the check lane may still find a question
-        hide(); return finish();
+        if (fastNone && check && !c) { if (tr) out('', null); return; }   // the check lane may still find a question
+        out('', null); return finish();
       }
-      if (!leadText && !c) { const el = Date.now() - at; if (el > 600) show('<span class="dot"></span>' + (el > 1500 ? 'thinking… ' + Math.round(el / 1000) + 's' : ''), [], x, y, true); return; }
+      if (!leadText && !c) { const el = Date.now() - at; if (tr) out(el > 600 ? '<span class="dot"></span><small>answering…</small>' : '', null); else if (el > 600) show('<span class="dot"></span>' + (el > 1500 ? 'thinking… ' + Math.round(el / 1000) + 's' : ''), [], x, y, true); return; }
       if (!firstShown) firstShown = Date.now();
       let html, status = '';
       const r = best();
@@ -345,19 +369,54 @@
       if (r && r.kind === 'free') acts.push(['Copy', () => navigator.clipboard.writeText(r.answer)]);
       if (r && r.kind === 'free' && typed && typed.field && !target) acts.push(['Replace', () => { undo = replaceTyped(typed, r.answer); applied = r; render(); }]);
       acts.push(['×', () => { hide(); gen++; }]);
-      show(html + (status ? '<br><small>' + status + '</small>' : ''), acts, x, y, true);
+      out(html + (status ? '<br><small>' + status + '</small>' : ''), acts);
       if ((!fast || f) && (!check || c)) finish();
     };
+    function trDone() { return !tr || !!tr.final; }
     function finish() {
-      if (reported) return; reported = true; clearInterval(tick);
+      if (trDone()) clearInterval(tick);
+      if (reported || (!fast && !check)) return; reported = true;
       const f = fast && fast.final, c = check && check.final;
       chrome.runtime.sendMessage({ type: 'metric', data: { id: (fast || check).id, checkId: check && check.id, trigger: applyNow ? 'release+apply' : 'release', model: cfg.model, readyBeforeClick: false,
         clickToFirstMs: firstShown ? firstShown - at : null, clickToDoneMs: (fast || check).doneAt ? (fast || check).doneAt - at : null,
         checkedMs: check && check.doneAt ? check.doneAt - at : null, agreed: f && c ? agrees(f, c) : null, kind: (c || f || {}).kind || null, ok: !!(c || f || {}).ok } });
     }
     const tick = setInterval(render, 250);
+    if (tr) tr.onUpdate = render;
     if (fast && !prep.unsure) fast.onUpdate = render;
     if (check) check.onUpdate = render;
+  }
+
+  // ── is the highlight in another language? ──────────────────────────────────────────────────────────
+  // Chrome's own detector (on this computer, instant, free) via the background worker; a mostly non-Latin script is
+  // non-English even when the text is too short for the detector to be sure.
+  const LANG = new Intl.DisplayNames(['en'], { type: 'language' });
+  async function foreign(text) {
+    const letters = String(text || '').replace(/[\s\d\p{P}\p{S}]/gu, '');
+    if (letters.length < 2 || text.length > MAX) return null;
+    const latin = (letters.match(/[A-Za-z\u00C0-\u024F]/g) || []).length / letters.length;
+    let r = null; try { r = await chrome.runtime.sendMessage({ type: 'lang', text: text.slice(0, 2000) }); } catch {}
+    const top = r && r.languages && r.languages[0];
+    if (latin < 0.5) { const code = top && top.language !== 'en' ? top.language : 'und'; return { code, sure: code !== 'und' && !!(r && r.isReliable), name: code === 'und' ? '' : LANG.of(code) || code }; }
+    if (top && top.language !== 'en' && top.language !== 'und' && r.isReliable && top.percentage >= 60) return { code: top.language, name: LANG.of(top.language) || top.language };
+    return null;
+  }
+  function selectionNow() {                            // the highlighted text and where it is, page or text field
+    const ty = typedSelection();
+    if (ty) { const rb = (ty.range || ty.el).getBoundingClientRect(); return { text: ty.text.replace(/\s+/g, ' ').trim(), x: rb.left, y: rb.bottom + 6, ty }; }
+    const s = getSelection(); if (!s || s.isCollapsed || !s.rangeCount) return null;
+    const r = s.getRangeAt(0), rb = r.getBoundingClientRect();
+    return { text: r.toString().replace(/\s+/g, ' ').trim(), x: rb.right + 8, y: rb.bottom + 6 };
+  }
+  // prep: a question prep (from prepare) or null. Returns the prep to run, with translation attached when foreign.
+  async function withTranslation(prep, force) {
+    const sel = selectionNow(); if (!sel || !sel.text) return prep;
+    const lang = await foreign(sel.text); if (!lang) return prep;
+    if (!prep) prep = { choices: [], target: null, typed: sel.ty || null, x: sel.x, y: sel.y, answerable: false,
+      data: { selection: sel.text.slice(0, MAX), choices: [], target: null, url: location.href, title: document.title, context: '', aboutMe: cfg.aboutMe } };
+    prep.translate = lang; prep.data.lang = lang.name;
+    if (force && prep.answerable === false) prep.answerable = true;   // right-click: translate AND answer
+    return prep;
   }
 
   document.addEventListener('mouseup', (e) => {
@@ -365,9 +424,9 @@
     if (e.composedPath().includes(host) || !cfg.enabled) return;
     const alt = e.altKey; clearTimeout(timer); lastMouseUp = Date.now();
     const mode = cfg.mode || 'instant';
-    timer = setTimeout(() => {
-      const prep = prepare(); if (!prep) return;
-      if (mode === 'instant') instant(prep, alt);
+    timer = setTimeout(async () => {
+      const prep = await withTranslation(prepare()); if (!prep) return;
+      if (mode === 'instant' || prep.translate) instant(prep, alt);
       else if (alt || mode === 'auto') answer(prep); else offer(prep);
     }, mode === 'instant' ? INSTANT_SETTLE : SETTLE);
   }, true);
@@ -384,7 +443,7 @@
     if (!live()) return;
     if (!cfg.enabled || e.composedPath().includes(host) || Date.now() - lastMouseUp < 1000) return;   // a mouse selection: the mouseup handler has it (with Option)
     clearTimeout(timer);
-    timer = setTimeout(() => { const ty = typedSelection(); const prep = ty && typedPrep(ty, false); if (!prep) return; if ((cfg.mode || 'instant') === 'instant') instant(prep, false); else if (cfg.mode === 'auto') answer(prep); else offer(prep); }, (cfg.mode || 'instant') === 'instant' ? INSTANT_SETTLE : SETTLE);
+    timer = setTimeout(async () => { const ty = typedSelection(); const prep = await withTranslation(ty && typedPrep(ty, false)); if (!prep) return; if ((cfg.mode || 'instant') === 'instant' || prep.translate) instant(prep, false); else if (cfg.mode === 'auto') answer(prep); else offer(prep); }, (cfg.mode || 'instant') === 'instant' ? INSTANT_SETTLE : SETTLE);
   }, true);
   addEventListener('scroll', () => { if (live()) withdraw(); }, true);
   addEventListener('blur', () => { if (live()) withdraw(); });
@@ -397,8 +456,10 @@
   chrome.runtime.onMessage.addListener((msg, _s, reply) => {
     if (!live()) return false;
     if (msg.type !== 'force') return false;
-    const prep = prepare(true, msg.text);
-    if (!prep) { reply({ ok: false }); return false; }
-    prep.data.force = true; withdraw(); if ((cfg.mode || 'instant') === 'instant') instant(prep, true); else answer(prep); reply({ ok: true }); return false;   // a right-click is an explicit ask: apply, like Option
+    const prep0 = prepare(true, msg.text);
+    if (!prep0) { reply({ ok: false }); return false; }
+    prep0.data.force = true; withdraw(); reply({ ok: true });
+    withTranslation(prep0, true).then((prep) => { if ((cfg.mode || 'instant') === 'instant' || prep.translate) instant(prep, true); else answer(prep); });
+    return false;   // a right-click is an explicit ask: apply, like Option (and translate, if it is in another language)
   });
 })();
