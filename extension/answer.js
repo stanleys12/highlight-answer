@@ -21,6 +21,7 @@ function render() {
     }
   } else if (fast && fast.ok && fast.kind !== 'none') { main = textOf(fast); note = check ? 'could not double-check: ' + (check.error || '') : fastOnly ? '' : 'double-checking… ' + s + 's'; }
   else if (check && !check.ok) main = 'Error: ' + (check.error || 'no answer');
+  else if (fast && fastOnly) main = fast.ok ? textOf(fast) : 'Error: ' + (fast.error || 'no answer');
   else main = 'Thinking… ' + s + 's';
   $('a').textContent = main; $('n').textContent = note;
   const r = check && check.ok ? check : fast && fast.ok ? fast : null;
