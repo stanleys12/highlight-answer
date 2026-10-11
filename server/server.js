@@ -26,9 +26,10 @@ const MODELS = new Set(['haiku', 'sonnet', 'opus']);
 const METRICS = path.join(__dirname, '..', 'metrics.jsonl');
 
 function claudeBin() {
-  for (const p of [path.join(os.homedir(), '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude']) if (fs.existsSync(p)) return p;
+  // launchd starts this with a bare PATH, so also look beside the node running it (where `npm i -g` puts claude, nvm included)
+  for (const d of [path.join(os.homedir(), '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', path.dirname(process.execPath), ...String(process.env.PATH || '').split(path.delimiter)]) if (d && fs.existsSync(path.join(d, 'claude'))) return path.join(d, 'claude');
   const ext = path.join(os.homedir(), '.vscode/extensions');   // the binary that ships inside the VS Code extension
-  const dirs = fs.existsSync(ext) ? fs.readdirSync(ext).filter((d) => /^anthropic\.claude-code-.*-darwin-arm64$/.test(d)).sort() : [];
+  const dirs = fs.existsSync(ext) ? fs.readdirSync(ext).filter((d) => /^anthropic\.claude-code-.*-darwin-(arm64|x64)$/.test(d)).sort() : [];
   if (!dirs.length) throw new Error('claude binary not found');
   return path.join(ext, dirs[dirs.length - 1], 'resources/native-binary/claude');
 }
@@ -100,10 +101,10 @@ function takeCli(model, effort, lane) {
   const k = model + '|' + effort + '|' + (lane || 'check'), s = SPARE.get(k); SPARE.delete(k);
   const warm = s && !s.dead && Date.now() - s.bornAt < SPARE_MAX_AGE;
   if (s && !warm) try { s.p.kill(); } catch {}
-  setTimeout(() => { if (!SPARE.has(k)) SPARE.set(k, spawnCli(model, effort, lane)); }, 50);   // the next question's spare
+  setTimeout(() => { if (!SPARE.has(k)) try { SPARE.set(k, spawnCli(model, effort, lane)); } catch {} }, 50);   // the next question's spare
   return { cli: warm ? s : spawnCli(model, effort, lane), warm };
 }
-function primeSpare(model, effort, lane) { const k = model + '|' + effort + '|' + (lane || 'check'); const s = SPARE.get(k); if (!s || s.dead || Date.now() - s.bornAt >= SPARE_MAX_AGE) { if (s) try { s.p.kill(); } catch {} SPARE.set(k, spawnCli(model, effort, lane)); } }
+function primeSpare(model, effort, lane) { const k = model + '|' + effort + '|' + (lane || 'check'); const s = SPARE.get(k); if (!s || s.dead || Date.now() - s.bornAt >= SPARE_MAX_AGE) { if (s) try { s.p.kill(); } catch {} SPARE.delete(k); try { SPARE.set(k, spawnCli(model, effort, lane)); } catch {} } }
 setInterval(() => { for (const k of [...SPARE.keys()]) { const [m, e, l] = k.split('|'); primeSpare(m, e, l); } }, 60e3).unref();
 process.on('exit', () => { for (const s of SPARE.values()) try { s.p.kill(); } catch {} });
 
