@@ -3,8 +3,9 @@
 # Uninstall: launchctl bootout gui/$(id -u)/com.stanley.highlightanswer; rm ~/Library/LaunchAgents/com.stanley.highlightanswer.plist
 set -e
 DIR="${0:A:h}"
-NODE="$(ls -d ~/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1)"
-[[ -x "$NODE" ]] || NODE="$(command -v node)"
+NODE="$(print -l ~/.nvm/versions/node/*/bin/node(N) | sort -V | tail -1)"
+[[ -x "$NODE" ]] || NODE="$(command -v node || true)"
+[[ -x "$NODE" ]] || { echo "node not found: install Node.js (or nvm), then run ./install.sh again" >&2; exit 1; }
 LABEL=com.stanley.highlightanswer
 PLIST=~/Library/LaunchAgents/$LABEL.plist
 cat > "$PLIST" <<EOF
