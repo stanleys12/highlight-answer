@@ -21,15 +21,21 @@ chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'answer') return;
   let alive = true; port.onDisconnect.addListener(() => { alive = false; });
   port.onMessage.addListener(async (data) => {
-    const post = (m) => { if (alive) try { port.postMessage(m); } catch {} };
+    let fin = false;
+    const post = (m) => { if (m && m.type === 'final') fin = true; if (alive) try { port.postMessage(m); } catch {} };
+    const line = (l) => { if (l.trim()) try { post(JSON.parse(l)); } catch {} };
     try {
       const res = await fetch(HELPER + '/answer', { method: 'POST', headers: H, body: JSON.stringify({ ...data, stream: true }) });
+      if (!res.ok) { const j = await res.json().catch(() => null); return post({ type: 'final', ok: false, error: (j && j.error) || 'helper answered HTTP ' + res.status }); }
       const rd = res.body.getReader(), dec = new TextDecoder(); let buf = '';
       for (;;) {
         const { done, value } = await rd.read(); if (done) break;
         buf += dec.decode(value, { stream: true }); let i;
-        while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l) try { post(JSON.parse(l)); } catch {} }
+        while ((i = buf.indexOf('\n')) >= 0) { line(buf.slice(0, i)); buf = buf.slice(i + 1); }
       }
+      line(buf + dec.decode());
+      // without a final message the page would show "Thinking…" forever
+      if (!fin) post({ type: 'final', ok: false, error: 'the helper ended the answer early' });
     } catch (e) { post({ type: 'final', ok: false, error: down(e) }); }
   });
 });
